@@ -1,0 +1,13 @@
+{
+  "name": "dual-review-loop-plugin",
+  "owner": {
+    "name": "hcooch2ch3"
+  },
+  "plugins": [
+    {
+      "name": "dual-review-loop",
+      "source": ".",
+      "description": "Auto-iterate a plan's checkbox tasks; each iteration runs dual-review as verifier, auto-applies Accept findings (≥ Important), atomic-commits."
+    }
+  ]
+}
