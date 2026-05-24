@@ -17,9 +17,11 @@ Requires: `dual-review` skill at `~/.claude/skills/dual-review/`, `jq`, `git`.
 ## Use
 
 ```
-/dual-review-loop /abs/path/plan.md [--max-iters N]
+/dual-review-loop /abs/path/plan.md [--max-iters N] [--max-minutes M]
 /dual-review-loop:cancel
 ```
+
+Defaults: `--max-iters 20`, `--max-minutes 30`. Both hook-enforced (Gates 10, 10b). `--max-minutes 0` disables wall-clock cap (24h idle gate still applies).
 
 Cancel manually: `rm .claude/dual-review-loop.state.json` in project root.
 
