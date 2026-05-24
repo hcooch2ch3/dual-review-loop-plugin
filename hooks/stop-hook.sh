@@ -24,6 +24,7 @@
 #   8   plan_path missing/relative
 #   9   plan has no unfinished tasks (AND no uncommitted changes)
 #   10  max_iterations reached
+#   10b max_minutes reached (wall-clock cap)
 #   11  Open Questions in previous brief
 #   12  lock not acquired (another hook instance running)
 #
@@ -106,6 +107,7 @@ ACTIVE=$(jq -r '.active // false' "$STATE_FILE")
 PLAN_PATH=$(jq -r '.plan_path // ""' "$STATE_FILE")
 ITERATION=$(jq -r '.iteration // 0' "$STATE_FILE")
 MAX_ITERATIONS=$(jq -r '.max_iterations // 20' "$STATE_FILE")
+MAX_MINUTES=$(jq -r '.max_minutes // 0' "$STATE_FILE")
 SESSION_ID_STATE=$(jq -r '.session_id // ""' "$STATE_FILE")
 STARTED_AT=$(jq -r '.started_at_epoch // 0' "$STATE_FILE")
 LAST_ITER_AT=$(jq -r '.last_iter_at_epoch // 0' "$STATE_FILE")
@@ -196,6 +198,14 @@ fi
 # Gate 10: max_iterations
 if [ "$MAX_ITERATIONS" -gt 0 ] && [ "$ITERATION" -ge "$MAX_ITERATIONS" ]; then
   cleanup_and_approve "max_iterations reached ($ITERATION >= $MAX_ITERATIONS)"
+fi
+
+# Gate 10b: max_minutes (wall-clock cap since started_at_epoch)
+if [ "$MAX_MINUTES" -gt 0 ] && [ "$STARTED_AT" -gt 0 ]; then
+  ELAPSED_MIN=$(( (NOW_EPOCH - STARTED_AT) / 60 ))
+  if [ "$ELAPSED_MIN" -ge "$MAX_MINUTES" ]; then
+    cleanup_and_approve "max_minutes reached (${ELAPSED_MIN}min >= ${MAX_MINUTES}min)"
+  fi
 fi
 
 # Gate 11: Open Questions in previous brief?

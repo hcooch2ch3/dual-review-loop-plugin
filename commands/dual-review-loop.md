@@ -1,6 +1,6 @@
 ---
 description: Start an auto-iteration loop that processes a plan's checkbox tasks with dual-review as verifier
-argument-hint: "<plan-path> [--max-iters N] [--max-minutes M] [--max-reviews N]"
+argument-hint: "<plan-path> [--max-iters N] [--max-minutes M]"
 ---
 
 # /dual-review-loop
@@ -20,12 +20,11 @@ When the user invokes this command:
 
 Required: `<plan-path>` — absolute path to a markdown file with `- [ ]` checkbox tasks.
 
-Optional budget flags (override SKILL defaults):
+Optional budget flags (both enforced by the stop hook):
 - `--max-iters N` (default: 20) — hard cap on iterations
-- `--max-minutes M` (default: 30) — wall-clock budget; loop self-stops when exceeded
-- `--max-reviews N` (default: 15) — max cumulative dual-review invocations
+- `--max-minutes M` (default: 30) — wall-clock cap since loop start; hook stops when `(now - started_at) ≥ M`
 
-If user passes flags Claude does not recognize, log and skip (do not error). For other rarely-used SKILL inputs (`max_files`, `max_loc`, `apply_threshold`, etc.) see the dual-review-loop SKILL inputs table; not exposed as flags by default.
+If user passes unrecognized flags, surface them in the start brief (Section 4) as `Unrecognized flags ignored: <list>` and continue. For other SKILL inputs (`max_reviews`, `max_files`, `max_loc`, `apply_threshold`, etc.) see the dual-review-loop SKILL inputs table; not exposed as flags by default (and not hook-enforced).
 
 If `<plan-path>` is relative or not provided: prompt user once via AskUserQuestion for the absolute path. Reject `~/...` — require fully expanded path (or expand it server-side).
 
@@ -47,7 +46,6 @@ If `<plan-path>` is relative or not provided: prompt user once via AskUserQuesti
   "iteration": 0,
   "max_iterations": <max_iters>,
   "max_minutes": <max_minutes>,
-  "max_reviews": <max_reviews>,
   "session_id": "<from current Claude Code session>",
   "pid": <current claude process pid>,
   "started_at_epoch": <now>,
@@ -56,7 +54,7 @@ If `<plan-path>` is relative or not provided: prompt user once via AskUserQuesti
 }
 ```
 
-Note: `max_iterations` is enforced by the stop hook. `max_minutes` and `max_reviews` are advisory at the hook level (24h idle is the hook's only wall-clock check); Claude self-enforces them per the SKILL workflow's stop conditions table.
+Both `max_iterations` and `max_minutes` are enforced by the stop hook (Gates 10 and 10b). The hook also enforces a hard 24h idle timeout independently.
 
 Path: `<cwd>/.claude/dual-review-loop.state.json` (create `.claude/` dir if missing).
 Write via temp + mv for atomicity.
