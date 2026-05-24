@@ -1,18 +1,22 @@
 # dual-review-loop
 
-Personal Claude Code plugin. Auto-iterate a plan's `- [ ]` checkbox tasks: each iteration runs `dual-review` as verifier, auto-applies high-confidence findings, atomic-commits. Companion to [dual-review](https://github.com/hcooch2ch3/dual-review).
+Claude Code plugin. Auto-iterate a plan's `- [ ]` checkbox tasks: each iteration runs `dual-review` as verifier, auto-applies high-confidence findings, atomic-commits. Companion to [dual-review](https://github.com/hcooch2ch3/dual-review).
 
-## Install (new machine)
+## Prerequisites
+
+- [Claude Code](https://claude.com/claude-code)
+- `jq`, `git` on PATH
+- [`dual-review`](https://github.com/hcooch2ch3/dual-review) skill installed at `~/.claude/skills/dual-review/`
+- At least one reviewer backend that `dual-review` can dispatch:
+  - `superpowers:code-reviewer` + `codex:adversarial-review` (preferred), or
+  - `oh-my-claudecode:critic` (fallback)
+
+## Install
 
 ```bash
-# Clone anywhere
-git clone https://github.com/hcooch2ch3/dual-review-loop-plugin.git ~/Desktop/myskills/dual-review-loop-plugin
-
-# Use per-session
-claude --plugin-dir ~/Desktop/myskills/dual-review-loop-plugin
+git clone https://github.com/hcooch2ch3/dual-review-loop-plugin.git
+claude --plugin-dir ./dual-review-loop-plugin
 ```
-
-Requires: `dual-review` skill at `~/.claude/skills/dual-review/`, `jq`, `git`.
 
 ## Use
 
@@ -46,4 +50,4 @@ Patterns adapted from `anthropics/claude-code/plugins/ralph-wiggum` (minimal sel
 
 ## License
 
-MIT (personal use).
+MIT — see [LICENSE](./LICENSE).
