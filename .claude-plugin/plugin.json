@@ -4,5 +4,8 @@
   "description": "Auto-iterate a plan's checkbox tasks; each iteration runs dual-review as verifier, auto-applies Accept findings (≥ Important), atomic-commits. Stops on Open Questions / budget caps / cancel.",
   "author": {
     "name": "hcooch2ch3"
-  }
+  },
+  "license": "MIT",
+  "repository": "https://github.com/hcooch2ch3/dual-review-loop-plugin",
+  "keywords": ["claude-code", "code-review", "automation", "dual-review"]
 }
