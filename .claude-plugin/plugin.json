@@ -7,5 +7,10 @@
   },
   "license": "MIT",
   "repository": "https://github.com/hcooch2ch3/dual-review-loop-plugin",
-  "keywords": ["claude-code", "code-review", "automation", "dual-review"]
+  "keywords": ["claude-code", "code-review", "automation", "dual-review"],
+  "commands": [
+    "./commands/dual-review-loop.md",
+    "./commands/cancel-loop.md"
+  ],
+  "hooks": "./hooks/hooks.json"
 }

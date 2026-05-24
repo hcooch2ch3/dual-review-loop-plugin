@@ -10,10 +10,7 @@
   "plugins": [
     {
       "name": "dual-review-loop",
-      "source": {
-        "source": "github",
-        "repo": "hcooch2ch3/dual-review-loop-plugin"
-      },
+      "source": "./",
       "description": "Auto-iterate a plan's checkbox tasks; each iteration runs dual-review as verifier, auto-applies Accept findings (≥ Important), atomic-commits.",
       "version": "0.1.0",
       "author": {
