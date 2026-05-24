@@ -23,6 +23,13 @@ Inside Claude Code:
 /plugin install dual-review-loop@dual-review-loop-plugin
 ```
 
+If `/plugin install` reports `"source type your Claude Code version does not support"`, fall back to the CLI form (same operation, different code path):
+
+```bash
+claude plugin marketplace add hcooch2ch3/dual-review-loop-plugin
+claude plugin install dual-review-loop@dual-review-loop-plugin
+```
+
 For local development, clone the repo and add the local path as a marketplace instead:
 
 ```
