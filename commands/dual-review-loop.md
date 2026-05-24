@@ -68,6 +68,7 @@ Add `.claude/dual-review-loop.*` to `.gitignore` if missing (don't commit state/
   plan: <plan-path>
   unfinished tasks: <count>
   max iterations: <N>
+  max minutes: <M> (wall-clock; hook stops at elapsed ≥ M*60s)
   session: <session_id>
   state file: .claude/dual-review-loop.state.json
 
