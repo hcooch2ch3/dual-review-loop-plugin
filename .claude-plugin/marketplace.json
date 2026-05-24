@@ -10,13 +10,15 @@
   "plugins": [
     {
       "name": "dual-review-loop",
-      "source": "./",
+      "source": {
+        "source": "github",
+        "repo": "hcooch2ch3/dual-review-loop-plugin"
+      },
       "description": "Auto-iterate a plan's checkbox tasks; each iteration runs dual-review as verifier, auto-applies Accept findings (≥ Important), atomic-commits.",
       "version": "0.1.0",
       "author": {
         "name": "hcooch2ch3"
       },
-      "repository": "https://github.com/hcooch2ch3/dual-review-loop-plugin",
       "license": "MIT",
       "keywords": ["claude-code", "code-review", "automation", "dual-review"],
       "category": "code-review"
