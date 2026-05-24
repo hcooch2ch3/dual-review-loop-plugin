@@ -1,6 +1,6 @@
 ---
 description: Start an auto-iteration loop that processes a plan's checkbox tasks with dual-review as verifier
-argument-hint: "<plan-path> [--max-iters N]"
+argument-hint: "<plan-path> [--max-iters N] [--max-minutes M] [--max-reviews N]"
 ---
 
 # /dual-review-loop
@@ -19,7 +19,13 @@ When the user invokes this command:
 ### 1. Parse arguments
 
 Required: `<plan-path>` — absolute path to a markdown file with `- [ ]` checkbox tasks.
-Optional: `--max-iters N` (default: 20).
+
+Optional budget flags (override SKILL defaults):
+- `--max-iters N` (default: 20) — hard cap on iterations
+- `--max-minutes M` (default: 30) — wall-clock budget; loop self-stops when exceeded
+- `--max-reviews N` (default: 15) — max cumulative dual-review invocations
+
+If user passes flags Claude does not recognize, log and skip (do not error). For other rarely-used SKILL inputs (`max_files`, `max_loc`, `apply_threshold`, etc.) see the dual-review-loop SKILL inputs table; not exposed as flags by default.
 
 If `<plan-path>` is relative or not provided: prompt user once via AskUserQuestion for the absolute path. Reject `~/...` — require fully expanded path (or expand it server-side).
 
@@ -40,6 +46,8 @@ If `<plan-path>` is relative or not provided: prompt user once via AskUserQuesti
   "plan_path": "<absolute plan path>",
   "iteration": 0,
   "max_iterations": <max_iters>,
+  "max_minutes": <max_minutes>,
+  "max_reviews": <max_reviews>,
   "session_id": "<from current Claude Code session>",
   "pid": <current claude process pid>,
   "started_at_epoch": <now>,
@@ -47,6 +55,8 @@ If `<plan-path>` is relative or not provided: prompt user once via AskUserQuesti
   "last_brief_path": ""
 }
 ```
+
+Note: `max_iterations` is enforced by the stop hook. `max_minutes` and `max_reviews` are advisory at the hook level (24h idle is the hook's only wall-clock check); Claude self-enforces them per the SKILL workflow's stop conditions table.
 
 Path: `<cwd>/.claude/dual-review-loop.state.json` (create `.claude/` dir if missing).
 Write via temp + mv for atomicity.
