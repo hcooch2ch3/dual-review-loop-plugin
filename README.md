@@ -2,6 +2,8 @@
 
 Claude Code plugin. Auto-iterate a plan's `- [ ]` checkbox tasks: each iteration runs `dual-review` as verifier, auto-applies high-confidence findings, atomic-commits. Companion to [dual-review](https://github.com/hcooch2ch3/dual-review).
 
+> ⚠️ Currently requires Korean-language `dual-review` output (the stop hook detects Accept/Reject sections by Korean headings). English support is not yet implemented — see Prerequisites.
+
 ## Prerequisites
 
 - [Claude Code](https://claude.com/claude-code)
@@ -14,10 +16,20 @@ Claude Code plugin. Auto-iterate a plan's `- [ ]` checkbox tasks: each iteration
 
 ## Install
 
-```bash
-git clone https://github.com/hcooch2ch3/dual-review-loop-plugin.git
-claude --plugin-dir ./dual-review-loop-plugin
+Inside Claude Code:
+
 ```
+/plugin marketplace add hcooch2ch3/dual-review-loop-plugin
+/plugin install dual-review-loop@dual-review-loop-plugin
+```
+
+For local development, clone the repo and add the local path as a marketplace instead:
+
+```
+/plugin marketplace add /absolute/path/to/dual-review-loop-plugin
+```
+
+See the [Claude Code plugin docs](https://docs.claude.com/en/docs/claude-code/plugins) for details.
 
 ## Use
 
