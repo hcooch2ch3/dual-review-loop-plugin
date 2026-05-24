@@ -1,0 +1,17 @@
+# Runtime state — never commit (project-local in user's repos, not this plugin repo)
+.claude/dual-review-loop.state.json
+.claude/dual-review-loop.inflight
+.claude/dual-review-loop.lock
+.claude/dual-review-loop.log
+.claude/reviews/
+
+# Editors / OS
+.DS_Store
+*.swp
+*.bak
+*~
+.vscode/
+.idea/
+
+# OMC plugin runtime artifacts
+.omc/

@@ -1,0 +1,8 @@
+{
+  "name": "dual-review-loop",
+  "version": "0.1.0",
+  "description": "Auto-iterate a plan's checkbox tasks; each iteration runs dual-review as verifier, auto-applies Accept findings (≥ Important), atomic-commits. Stops on Open Questions / budget caps / cancel.",
+  "author": {
+    "name": "hcooch2ch3"
+  }
+}

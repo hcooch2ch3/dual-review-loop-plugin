@@ -1,0 +1,17 @@
+{
+  "description": "dual-review-loop stop hook: re-injects next-task prompt while state.active=true",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop-hook.sh",
+            "timeout": 30,
+            "statusMessage": "dual-review-loop: checking state..."
+          }
+        ]
+      }
+    ]
+  }
+}
