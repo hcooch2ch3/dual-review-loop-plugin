@@ -187,46 +187,58 @@ if [ -f "$INFLIGHT_FILE" ]; then
   exit 0
 fi
 
-# Mode dispatch: plan mode keeps the historical gates 8-9 + REASON builder.
-# task mode (T1 placeholder) approves without injection — T4 fills in the
-# task-specific gates and prompt. This guarantees:
-#   - v1 state (mode=plan default) is byte-equivalent.
-#   - A hand-crafted task state between T1 and T4 lands cleanly (approve),
-#     never silent-traps the user.
+# Mode dispatch: plan/task share gates 10-11 + state update; gates 8-9
+# differ (plan inspects plan_path checkboxes; task validates task_description).
+# Unknown mode fails open so a corrupted state never traps the user.
+TASK_DESCRIPTION=""
+TASK_LOG_PATH=""
+
 case "$MODE" in
-  plan) ;;
+  plan)
+    # Gate 8 (plan): plan_path absolute + exists
+    case "$PLAN_PATH" in
+      /*) ;;
+      *)  fail_open "plan_path not absolute: $PLAN_PATH" ;;
+    esac
+    [ -f "$PLAN_PATH" ] || fail_open "plan_path missing: $PLAN_PATH"
+
+    # Gate 9 (plan): plan has unfinished tasks? (also check working tree
+    # clean to avoid premature completion)
+    UNFINISHED=$(grep -cE '^([-*+]|[0-9]+\.) \[ \]' "$PLAN_PATH" 2>/dev/null | head -1)
+    UNFINISHED=${UNFINISHED:-0}
+    if [ "$UNFINISHED" -eq 0 ] 2>/dev/null; then
+      # No unfinished tasks. But if working tree has uncommitted changes,
+      # the last iter's commit may not have landed yet — don't declare done.
+      PLAN_DIR=$(dirname "$PLAN_PATH")
+      if git -C "$PLAN_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+        DIRTY=$(git -C "$PLAN_DIR" status --porcelain 2>/dev/null | head -1)
+        if [ -n "$DIRTY" ]; then
+          log "no unfinished tasks but working tree dirty — soft-pause for manual commit"
+          soft_pause "no unfinished tasks but uncommitted changes present"
+        fi
+      fi
+      cleanup_and_approve "all tasks complete after $ITERATION iterations"
+    fi
+    ;;
   task)
-    log "task mode placeholder (T1 — T4 fills): approve without inject"
-    approve
+    # Gate 8 (task): task_description present + within length bounds
+    TASK_DESCRIPTION=$(jq -r '.task_description // ""' "$STATE_FILE")
+    if [ -z "$TASK_DESCRIPTION" ]; then
+      fail_open "task_description empty in state"
+    fi
+    TASK_DESC_LEN=${#TASK_DESCRIPTION}
+    if [ "$TASK_DESC_LEN" -gt 2000 ]; then
+      fail_open "task_description too long ($TASK_DESC_LEN chars; max 2000)"
+    fi
+    # Gate 9 (task): task log path read (best-effort — log existence is the
+    # command's responsibility, hook only references it in the inject prompt
+    # so the LLM can read prior iter context).
+    TASK_LOG_PATH=$(jq -r '.task_log_path // ""' "$STATE_FILE")
     ;;
   *)
     fail_open "unknown mode in state: $MODE"
     ;;
 esac
-
-# Gate 8: plan_path absolute + exists (plan mode only)
-case "$PLAN_PATH" in
-  /*) ;;
-  *)  fail_open "plan_path not absolute: $PLAN_PATH" ;;
-esac
-[ -f "$PLAN_PATH" ] || fail_open "plan_path missing: $PLAN_PATH"
-
-# Gate 9: plan has unfinished tasks? (also check working tree clean to avoid premature completion)
-UNFINISHED=$(grep -cE '^([-*+]|[0-9]+\.) \[ \]' "$PLAN_PATH" 2>/dev/null | head -1)
-UNFINISHED=${UNFINISHED:-0}
-if [ "$UNFINISHED" -eq 0 ] 2>/dev/null; then
-  # No unfinished tasks. But if working tree has uncommitted changes,
-  # the last iter's commit may not have landed yet — don't declare done.
-  PLAN_DIR=$(dirname "$PLAN_PATH")
-  if git -C "$PLAN_DIR" rev-parse --git-dir >/dev/null 2>&1; then
-    DIRTY=$(git -C "$PLAN_DIR" status --porcelain 2>/dev/null | head -1)
-    if [ -n "$DIRTY" ]; then
-      log "no unfinished tasks but working tree dirty — soft-pause for manual commit"
-      soft_pause "no unfinished tasks but uncommitted changes present"
-    fi
-  fi
-  cleanup_and_approve "all tasks complete after $ITERATION iterations"
-fi
 
 # Gate 10: max_iterations
 if [ "$MAX_ITERATIONS" -gt 0 ] && [ "$ITERATION" -ge "$MAX_ITERATIONS" ]; then
@@ -317,13 +329,21 @@ printf '%s\n' "$NEXT_ITER" > "$INFLIGHT_FILE" 2>/dev/null || true
 
 log "iter $NEXT_ITER → injecting (brief target: $NEXT_BRIEF_PATH)"
 
-# Build REASON via jq to safely escape any shell special chars in PLAN_PATH
-REASON=$(jq -nr \
-  --argjson iter "$NEXT_ITER" \
-  --argjson max "$MAX_ITERATIONS" \
-  --arg plan "$PLAN_PATH" \
-  --arg brief "$NEXT_BRIEF_PATH" \
-  --arg inflight "$INFLIGHT_FILE" '
+# Build REASON via jq to safely escape any shell special chars.
+# Two prompt shapes — plan (checkbox-driven) vs task (free-form inline).
+# IMPORTANT: task prompts must NOT contain the token "ralph" / "RALPH" — that
+# brand collides with another plugin family and could cross-trigger their
+# stop hook. Sentinel format is "[dual-review-loop iter N/M]" (plan) or
+# "[dual-review-loop task iter N/M]" (task); a token-blacklist regression
+# test pins this.
+case "$MODE" in
+  plan)
+    REASON=$(jq -nr \
+      --argjson iter "$NEXT_ITER" \
+      --argjson max "$MAX_ITERATIONS" \
+      --arg plan "$PLAN_PATH" \
+      --arg brief "$NEXT_BRIEF_PATH" \
+      --arg inflight "$INFLIGHT_FILE" '
 "[dual-review-loop iter \($iter)/\($max)]
 
 Plan: \($plan)
@@ -353,9 +373,56 @@ Process exactly ONE next unfinished task from the plan checkbox list:
 10. Stop. The hook will re-fire for the next iter or terminate naturally.
 
 Do NOT manually edit .claude/dual-review-loop.state.json — the hook owns it.
-To cancel: rm .claude/dual-review-loop.state.json (or run /dual-review-loop:cancel)."')
+To cancel: rm .claude/dual-review-loop.state.json (or run /dual-review-loop:cancel-loop)."')
+    SYSTEM_MSG="dual-review-loop plan iter ${NEXT_ITER}/${MAX_ITERATIONS}"
+    ;;
+  task)
+    REASON=$(jq -nr \
+      --argjson iter "$NEXT_ITER" \
+      --argjson max "$MAX_ITERATIONS" \
+      --argjson max_files "$MAX_FILES" \
+      --argjson max_loc "$MAX_LOC" \
+      --argjson max_reviews "$MAX_REVIEWS" \
+      --arg task "$TASK_DESCRIPTION" \
+      --arg log "$TASK_LOG_PATH" \
+      --arg brief "$NEXT_BRIEF_PATH" \
+      --arg inflight "$INFLIGHT_FILE" '
+"[dual-review-loop task iter \($iter)/\($max)]
 
-SYSTEM_MSG="dual-review-loop iter ${NEXT_ITER}/${MAX_ITERATIONS}"
+Task: \($task)
+
+Process exactly ONE next concrete sub-step that advances this task:
+
+1. Decide one next sub-step — bias toward smaller, reviewable units (single file / single concept). If the task is now complete, do NOT invent more work; run /dual-review-loop:cancel-loop instead.
+2. Execute it (make code changes, run tests, etc.)
+3. Invoke the dual-review skill programmatically. Include this block in your dispatch prompt:
+     dual-review-invocation:
+       mode: programmatic
+       execution_mode: wait
+       caller: dual-review-loop
+       scope:
+         type: working-tree
+       meta_review: false
+4. Read the dual-review synthesis brief. Save it verbatim to: \($brief)
+5. Apply auto-fixes per policy:
+   - Every item under \"## ✅ Accept — 양쪽 독립 합치\" (Tier 1)
+   - Items under \"## ✅ Accept — 단일 리뷰어, 기술적으로 타당\" with Severity ≥ Important
+   - Skip Minor items (log to commit footer or task log)
+   - If \"## Open Questions\" non-empty: STOP, report to user. Do NOT continue.
+6. Re-verify (re-run task tests / verify command)
+7. Append an iteration entry to the task log: \($log)
+8. Atomic commit: code changes + task log append + deferred-minor footer.
+9. Update state cumulative counters (cum_files_changed / cum_loc_changed / cum_reviews / consecutive_same_failure) BEFORE this hook re-fires, otherwise budget caps cannot fire. Use jq temp+mv on .claude/dual-review-loop.state.json.
+10. After commit lands: delete the in-flight marker (rm \($inflight)).
+11. Stop. The hook will re-fire for the next iter or terminate naturally.
+
+Budget caps (hook gates): max_files=\($max_files), max_loc=\($max_loc), max_reviews=\($max_reviews). Going over any → loop ends.
+
+Do NOT manually edit .claude/dual-review-loop.state.json — the hook owns iteration/timestamp fields.
+To cancel: rm .claude/dual-review-loop.state.json (or run /dual-review-loop:cancel-loop)."')
+    SYSTEM_MSG="dual-review-loop task iter ${NEXT_ITER}/${MAX_ITERATIONS}"
+    ;;
+esac
 
 jq -n --arg r "$REASON" --arg s "$SYSTEM_MSG" \
   '{"decision":"block","reason":$r,"systemMessage":$s}' 2>/dev/null || \
