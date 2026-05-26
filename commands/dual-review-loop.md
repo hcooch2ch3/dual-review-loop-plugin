@@ -50,21 +50,18 @@ If `<plan-path>` is relative or not provided: prompt user once via AskUserQuesti
   "max_files": 999999,
   "max_loc": 999999,
   "max_reviews": 999999,
-  "cum_files_changed": 0,
-  "cum_loc_changed": 0,
-  "cum_reviews": 0,
-  "consecutive_same_failure": 0,
   "session_id": "<from current Claude Code session>",
   "pid": <current claude process pid>,
   "started_at_epoch": <now>,
+  "started_at_sha": "<git rev-parse HEAD of the project repo (or empty if not a git repo)>",
   "last_iter_at_epoch": <now>,
   "last_brief_path": ""
 }
 ```
 
-Schema v2 (was v1) adds `mode` (`"plan"` here, `"task"` for `/dual-review-loop:dual-review-task`) and cumulative gate fields (`max_*` / `cum_*` / `consecutive_same_failure`). Defaults above (999999 / 0) keep plan-mode behaviour identical to v1 — the cumulative caps only fire if a caller explicitly lowers them.
+Schema v2 (was v1) adds `mode` (`"plan"` here, `"task"` for `/dual-review-loop:dual-review-task`), cumulative gate fields (`max_*`), and `started_at_sha` (used by the hook as a git diff baseline to compute changed-files/LOC counters automatically — no LLM trust). Defaults above (999999) keep plan-mode behaviour identical to v1; the cumulative caps only fire if a caller explicitly lowers them.
 
-Both `max_iterations` and `max_minutes` are enforced by the stop hook (Gates 10 and 10b). Cumulative caps are Gates 10c–f. The hook also enforces a hard 24h idle timeout independently.
+`max_iterations` and `max_minutes` are enforced by the stop hook (Gates 10/10b). Cumulative caps (Gates 10c–e) are enforced by the hook computing `git diff --shortstat <started_at_sha> HEAD` and counting `.claude/reviews/iter-*.md` files — these gates are hook-owned, not command-owned. The hook also enforces a hard 24h idle timeout.
 
 Path: `<cwd>/.claude/dual-review-loop.state.json` (create `.claude/` dir if missing).
 Write via temp + mv for atomicity.
@@ -82,7 +79,7 @@ Add `.claude/dual-review-loop.*` to `.gitignore` if missing (don't commit state/
   session: <session_id>
   state file: .claude/dual-review-loop.state.json
 
-  Cancel anytime: /dual-review-loop:cancel
+  Cancel anytime: /dual-review-loop:cancel-loop
   Or: rm .claude/dual-review-loop.state.json
 ```
 

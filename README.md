@@ -7,7 +7,7 @@ Claude Code plugin. Auto-iterate work under `dual-review` verification, auto-app
 
 Companion to [dual-review](https://github.com/hcooch2ch3/dual-review).
 
-> ⚠️ Currently requires Korean-language `dual-review` output (the stop hook detects Accept/Reject sections by Korean headings). English support is not yet implemented — see Prerequisites.
+> ⚠️ Currently requires Korean-language `dual-review` output. The injected iteration prompt instructs the LLM to apply Accept findings using Korean headings (`## ✅ Accept — 양쪽 독립 합치` etc.); English support is not yet implemented — see Prerequisites.
 
 ## Prerequisites
 
@@ -17,7 +17,7 @@ Companion to [dual-review](https://github.com/hcooch2ch3/dual-review).
 - At least one reviewer backend that `dual-review` can dispatch:
   - `superpowers:code-reviewer` + `codex:adversarial-review` (preferred), or
   - `oh-my-claudecode:critic` (fallback)
-- **Korean-language `dual-review` output.** The stop hook detects Accept/Reject sections by their Korean headings (`## ✅ Accept — 양쪽 독립 합치` etc.). If you fork `dual-review` to emit English, you must also update the corresponding `grep`/`awk` patterns in `hooks/stop-hook.sh`.
+- **Korean-language `dual-review` output.** The injected iteration prompt names Accept buckets by their Korean headings (`## ✅ Accept — 양쪽 독립 합치`, `## ✅ Accept — 단일 리뷰어, 기술적으로 타당`, `## Open Questions`). The hook itself only parses `## Open Questions` (English heading) for the early-stop gate; the rest live inside the prompt body. If you fork `dual-review` to emit English Accept headings, update the prompt strings in `commands/dual-review-loop.md` and `commands/dual-review-task.md` accordingly.
 
 ## Install
 
@@ -79,7 +79,8 @@ Cancel preserves the task log (post-mortem artifact). Add `.claude/dual-review-l
 
 - **Plan mode blocks commits mid-loop** — if Claude Code's plan mode is active when the loop tries to commit, iteration freezes (inflight marker never cleared). Recovery: exit plan mode, manually `git commit`, then `rm .claude/dual-review-loop.inflight`. Hook resumes on next stop.
 - **Forward-fix only** — never `git revert` automatically. Wrong commit must be fixed forward.
-- **One concurrent loop per project** — state file existence gate.
+- **One concurrent loop per project** — state file existence gate. Mode-agnostic: a task-mode loop refuses plan-mode start and vice versa.
+- **Downgrading the plugin mid-loop kills active loops** — schema v2 state (mode/cumulative fields, task mode) is rejected by pre-task-mode v1 hooks (older releases), which fail-open and delete the state file. If you must downgrade while a loop is running: run `/dual-review-loop:cancel-loop` first, or accept the loss. Forward upgrades (v1 state running, hook upgraded to v2) are safe — the new hook defaults `mode=plan` and treats absent cumulative fields as Infinity.
 
 ## Architecture (quick reference)
 

@@ -119,14 +119,13 @@ LAST_INJECTED_ITER=$(jq -r '.last_injected_iter // 0' "$STATE_FILE")
 LAST_BRIEF_PATH=$(jq -r '.last_brief_path // ""' "$STATE_FILE")
 
 # v2 fields (default to "plan mode + Infinity gates" so v1 state is byte-equivalent).
+# Cumulative cap fields are hook-OWNED — computed from git diff + filesystem,
+# not trusted from prompt-driven state updates (dual review #8 high #1).
 MODE=$(jq -r '.mode // "plan"' "$STATE_FILE")
 MAX_FILES=$(jq -r '.max_files // 999999' "$STATE_FILE")
 MAX_LOC=$(jq -r '.max_loc // 999999' "$STATE_FILE")
 MAX_REVIEWS=$(jq -r '.max_reviews // 999999' "$STATE_FILE")
-CUM_FILES=$(jq -r '.cum_files_changed // 0' "$STATE_FILE")
-CUM_LOC=$(jq -r '.cum_loc_changed // 0' "$STATE_FILE")
-CUM_REVIEWS=$(jq -r '.cum_reviews // 0' "$STATE_FILE")
-CONSEC_FAIL=$(jq -r '.consecutive_same_failure // 0' "$STATE_FILE")
+STARTED_AT_SHA=$(jq -r '.started_at_sha // ""' "$STATE_FILE")
 
 NOW_EPOCH=$(date +%s)
 
@@ -147,8 +146,10 @@ if [ -n "$SESSION_ID_HOOK" ] && [ "$SESSION_ID_HOOK" != "$SESSION_ID_STATE" ]; t
 fi
 
 # Gate 5: same-session phantom defense
-# If we've already injected at least once, the previous user-turn must contain our sentinel.
-# Sentinel: "[dual-review-loop iter <N>" — appears at top of every injection.
+# If we've already injected at least once, the previous user-turn must contain
+# our sentinel. Sentinels (mode-aware):
+#   plan: "[dual-review-loop iter <N>"
+#   task: "[dual-review-loop task iter <N>"
 TRANSCRIPT_PATH=$(printf '%s' "$HOOK_INPUT" | jq -r '.transcript_path // ""' 2>/dev/null)
 if [ "$LAST_INJECTED_ITER" -gt 0 ]; then
   CONTINUATION=0
@@ -159,9 +160,11 @@ if [ "$LAST_INJECTED_ITER" -gt 0 ]; then
       CONTINUATION=1
     fi
   fi
-  # Strategy B: transcript sentinel check (more reliable when available)
+  # Strategy B: transcript sentinel check. ERE regex accepts both shapes so
+  # task-mode iterations past the time-window grace are still recognized
+  # (dual review #8 — sup M1 / codex high #2).
   if [ "$CONTINUATION" -eq 0 ] && [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
-    if grep -qF "[dual-review-loop iter $LAST_INJECTED_ITER" "$TRANSCRIPT_PATH" 2>/dev/null; then
+    if grep -qE "\[dual-review-loop( task)? iter $LAST_INJECTED_ITER" "$TRANSCRIPT_PATH" 2>/dev/null; then
       CONTINUATION=1
     fi
   fi
@@ -254,7 +257,27 @@ if [ "$MAX_MINUTES" -gt 0 ] && [ "$STARTED_AT" -gt 0 ]; then
   fi
 fi
 
-# Gates 10c-f: cumulative caps (v2; v1 state defaults to 999999/0 so no-op).
+# Gates 10c-e: cumulative caps. Hook-computed from git + filesystem so the
+# LLM cannot bypass them by skipping a counter-update step (dual review #8
+# Critical/I1). v1 state has no started_at_sha → cum_files/loc stay 0 → no
+# enforcement (v1 default 999999 max also keeps this no-op for legacy state).
+CUM_FILES=0
+CUM_LOC=0
+CUM_REVIEWS=0
+if [ -n "$STARTED_AT_SHA" ]; then
+  # Resolve repo root from the project — STATE_FILE lives at <cwd>/.claude/...
+  if STATS=$(git diff --shortstat "$STARTED_AT_SHA" HEAD 2>/dev/null); then
+    # Parse "N files changed, X insertions(+), Y deletions(-)" (each piece optional).
+    FILES_TOK=$(printf '%s' "$STATS" | grep -oE '[0-9]+ files? changed' | grep -oE '[0-9]+' | head -1)
+    INS_TOK=$(printf '%s' "$STATS"  | grep -oE '[0-9]+ insertions?'    | grep -oE '[0-9]+' | head -1)
+    DEL_TOK=$(printf '%s' "$STATS"  | grep -oE '[0-9]+ deletions?'     | grep -oE '[0-9]+' | head -1)
+    CUM_FILES=${FILES_TOK:-0}
+    CUM_LOC=$(( ${INS_TOK:-0} + ${DEL_TOK:-0} ))
+  fi
+fi
+CUM_REVIEWS=$(ls "$REVIEWS_DIR"/iter-*.md 2>/dev/null | wc -l | tr -d ' ')
+CUM_REVIEWS=${CUM_REVIEWS:-0}
+
 if [ "$CUM_FILES" -ge "$MAX_FILES" ]; then
   cleanup_and_approve "max_files reached ($CUM_FILES >= $MAX_FILES)"
 fi
@@ -264,9 +287,8 @@ fi
 if [ "$CUM_REVIEWS" -ge "$MAX_REVIEWS" ]; then
   cleanup_and_approve "max_reviews reached ($CUM_REVIEWS >= $MAX_REVIEWS)"
 fi
-if [ "$CONSEC_FAIL" -ge 2 ]; then
-  cleanup_and_approve "same verify failure $CONSEC_FAIL times in a row"
-fi
+# (consecutive_same_failure gate removed in dual review #8 — fingerprint
+# was undefined across iters; max_iterations is the hard stop on stuck verify.)
 
 # Gate 11: Open Questions in previous brief?
 # Prefer last_brief_path; fallback to transcript scan.

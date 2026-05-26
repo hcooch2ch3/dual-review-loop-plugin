@@ -65,11 +65,8 @@ AskUserQuestion. Reject descriptions outside `1 ≤ len ≤ 2000`.
   "max_files": <max_files>,
   "max_loc": <max_loc>,
   "max_reviews": <max_reviews>,
-  "cum_files_changed": 0,
-  "cum_loc_changed": 0,
-  "cum_reviews": 0,
-  "consecutive_same_failure": 0,
   "session_id": "<from current Claude Code session>",
+  "started_at_sha": "<git rev-parse HEAD of the project repo (or empty if not a git repo)>",
   "pid": <current claude process pid>,
   "started_at_epoch": <now>,
   "last_iter_at_epoch": <now>,
@@ -171,16 +168,18 @@ Immediately proceed to execute the first sub-step per the workflow:
 8. Atomic commit: code changes + task log append + deferred-minor footer.
    Korean commit message body per project convention.
 
-9. Update state counters BEFORE the hook re-fires:
-   - `cum_files_changed += <files changed this iter>`
-   - `cum_loc_changed += <+added + -removed>`
-   - `cum_reviews += 1`
-   - If verify fingerprint matches previous iter's: `consecutive_same_failure += 1`
-     else reset to 0.
-   - Write via temp + mv for atomicity.
+9. (Optional) Delete the in-flight marker `rm .claude/dual-review-loop.inflight`
+   so the next hook fire knows this iter completed cleanly.
 
 10. Stop. The hook re-fires for the next iter or terminates naturally
     (budget cap, Open Questions, idle timeout).
+
+**Note (hook-owned counters)**: do NOT manually touch
+`cum_files_changed` / `cum_loc_changed` / `cum_reviews` — the hook
+computes them deterministically from `git diff --shortstat <started_at_sha> HEAD`
+and `ls .claude/reviews/iter-*.md` on the next fire. Only the command
+(this file at §3) writes `started_at_sha`; everything cumulative is
+hook-owned.
 
 ### 6. Constraints
 
@@ -196,13 +195,16 @@ Immediately proceed to execute the first sub-step per the workflow:
 The stop hook (`hooks/stop-hook.sh`) gates:
 - `iteration ≥ max_iterations` → Gate 10
 - wall-clock `≥ max_minutes` → Gate 10b
-- `cum_files_changed ≥ max_files` → Gate 10c
-- `cum_loc_changed ≥ max_loc` → Gate 10d
-- `cum_reviews ≥ max_reviews` → Gate 10e
-- `consecutive_same_failure ≥ 2` → Gate 10f
+- changed files since `started_at_sha` ≥ `max_files` → Gate 10c (hook-computed via `git diff --shortstat`)
+- changed LOC (+insertions + deletions) since `started_at_sha` ≥ `max_loc` → Gate 10d (same source)
+- count of `.claude/reviews/iter-*.md` ≥ `max_reviews` → Gate 10e (hook-counted on filesystem)
 - Open Questions in last brief → Gate 11
 - Idle > 24h → Gate 6
 - User runs `/dual-review-loop:cancel-loop` or removes state file.
+
+There is no `consecutive_same_failure` gate — the verify-fingerprint
+definition was non-deterministic across iters. Hard stop on repeated
+failure is your `max_iterations` budget instead.
 
 ## Anti-patterns
 

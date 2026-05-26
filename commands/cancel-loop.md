@@ -16,8 +16,11 @@ When invoked:
 2. If yes:
    - Read `mode` (defaults to `"plan"` when absent — v1 state) and
      `task_log_path` for the brief output.
-   - Delete the state file + `dual-review-loop.lock` (if present) +
-     `dual-review-loop.inflight` (if present).
+   - Delete the state file (`rm .claude/dual-review-loop.state.json`) +
+     the lock **directory** (`rmdir .claude/dual-review-loop.lock` — it
+     is created with `mkdir` for atomicity, so `rm` would fail) +
+     the in-flight marker file (`rm .claude/dual-review-loop.inflight`).
+     All three are best-effort; ignore "not present" errors.
    - **Do NOT delete the task log** (`.claude/dual-review-loop/task-*.log.md`)
      — it is the post-mortem artifact. Mention its path in the brief so
      the user can read it.
