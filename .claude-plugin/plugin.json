@@ -1,7 +1,7 @@
 {
   "name": "dual-review-loop",
   "version": "0.1.0",
-  "description": "Auto-iterate a plan's checkbox tasks; each iteration runs dual-review as verifier, auto-applies Accept findings (≥ Important), atomic-commits. Stops on Open Questions / budget caps / cancel.",
+  "description": "Auto-iterate either a plan's checkbox tasks (plan mode) or a free-form inline task (task mode); each iteration runs dual-review as verifier, auto-applies Accept findings (≥ Important), atomic-commits. Stops on Open Questions / budget caps / cancel.",
   "author": {
     "name": "hcooch2ch3"
   },
@@ -10,6 +10,7 @@
   "keywords": ["claude-code", "code-review", "automation", "dual-review"],
   "commands": [
     "./commands/dual-review-loop.md",
+    "./commands/dual-review-task.md",
     "./commands/cancel-loop.md"
   ],
   "hooks": "./hooks/hooks.json"

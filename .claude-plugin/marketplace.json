@@ -7,7 +7,7 @@
     {
       "name": "dual-review-loop",
       "source": "./",
-      "description": "Auto-iterate a plan's checkbox tasks; each iteration runs dual-review as verifier, auto-applies Accept findings (≥ Important), atomic-commits."
+      "description": "Auto-iterate either a plan's checkbox tasks (plan mode) or a free-form inline task (task mode); each iteration runs dual-review as verifier, auto-applies Accept findings (≥ Important), atomic-commits."
     }
   ]
 }
