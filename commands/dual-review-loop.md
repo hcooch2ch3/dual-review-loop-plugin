@@ -32,7 +32,7 @@ If `<plan-path>` is relative or not provided: prompt user once via AskUserQuesti
 
 - File at `<plan-path>` exists.
 - Plan contains at least one `^([-*+]|[0-9]+\. ) \[ \]` line.
-- `<cwd>/.claude/dual-review-loop.state.json` does NOT already exist (refuse to start a second concurrent loop in the same project).
+- `<cwd>/.claude/dual-review-loop.state.json` does NOT already exist (refuse to start a second concurrent loop in the same project). This check is mode-agnostic: if a `task`-mode loop is in progress, this plan-mode invocation refuses (and vice versa via `/dual-review-loop:dual-review-task`).
 - `dual-review` skill is installed at `~/.claude/skills/dual-review/SKILL.md` (warn if missing — caller should install first).
 - `jq` is on PATH (required by the stop hook).
 
@@ -40,12 +40,20 @@ If `<plan-path>` is relative or not provided: prompt user once via AskUserQuesti
 
 ```json
 {
-  "schema": "v1",
+  "schema": "v2",
+  "mode": "plan",
   "active": true,
   "plan_path": "<absolute plan path>",
   "iteration": 0,
   "max_iterations": <max_iters>,
   "max_minutes": <max_minutes>,
+  "max_files": 999999,
+  "max_loc": 999999,
+  "max_reviews": 999999,
+  "cum_files_changed": 0,
+  "cum_loc_changed": 0,
+  "cum_reviews": 0,
+  "consecutive_same_failure": 0,
   "session_id": "<from current Claude Code session>",
   "pid": <current claude process pid>,
   "started_at_epoch": <now>,
@@ -54,7 +62,9 @@ If `<plan-path>` is relative or not provided: prompt user once via AskUserQuesti
 }
 ```
 
-Both `max_iterations` and `max_minutes` are enforced by the stop hook (Gates 10 and 10b). The hook also enforces a hard 24h idle timeout independently.
+Schema v2 (was v1) adds `mode` (`"plan"` here, `"task"` for `/dual-review-loop:dual-review-task`) and cumulative gate fields (`max_*` / `cum_*` / `consecutive_same_failure`). Defaults above (999999 / 0) keep plan-mode behaviour identical to v1 — the cumulative caps only fire if a caller explicitly lowers them.
+
+Both `max_iterations` and `max_minutes` are enforced by the stop hook (Gates 10 and 10b). Cumulative caps are Gates 10c–f. The hook also enforces a hard 24h idle timeout independently.
 
 Path: `<cwd>/.claude/dual-review-loop.state.json` (create `.claude/` dir if missing).
 Write via temp + mv for atomicity.
@@ -64,7 +74,7 @@ Add `.claude/dual-review-loop.*` to `.gitignore` if missing (don't commit state/
 ### 4. Emit start brief
 
 ```
-🔄 dual-review-loop started
+🔄 dual-review-loop started (plan mode)
   plan: <plan-path>
   unfinished tasks: <count>
   max iterations: <N>
