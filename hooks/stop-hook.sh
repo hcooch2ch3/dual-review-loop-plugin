@@ -40,7 +40,10 @@ INFLIGHT_FILE=".claude/dual-review-loop.inflight"
 REVIEWS_DIR=".claude/reviews"
 IDLE_TIMEOUT_SECONDS=$((24 * 3600))
 PHANTOM_GRACE_SECONDS=600   # if hook fires within 10min of last inject, assume continuation
-SCHEMA_VERSION="v1"
+# v1: plan-mode only (legacy). v2: adds `mode` field + cumulative gates +
+# task mode. Both accepted so v1 in-flight loops do not break when the hook is
+# upgraded ahead of the command (codex dual review high #2 — atomic migration).
+SCHEMA_VERSIONS_OK="v1 v2"
 
 log() {
   mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null
@@ -115,10 +118,23 @@ LAST_INJECTED_AT=$(jq -r '.last_injected_at_epoch // 0' "$STATE_FILE")
 LAST_INJECTED_ITER=$(jq -r '.last_injected_iter // 0' "$STATE_FILE")
 LAST_BRIEF_PATH=$(jq -r '.last_brief_path // ""' "$STATE_FILE")
 
+# v2 fields (default to "plan mode + Infinity gates" so v1 state is byte-equivalent).
+MODE=$(jq -r '.mode // "plan"' "$STATE_FILE")
+MAX_FILES=$(jq -r '.max_files // 999999' "$STATE_FILE")
+MAX_LOC=$(jq -r '.max_loc // 999999' "$STATE_FILE")
+MAX_REVIEWS=$(jq -r '.max_reviews // 999999' "$STATE_FILE")
+CUM_FILES=$(jq -r '.cum_files_changed // 0' "$STATE_FILE")
+CUM_LOC=$(jq -r '.cum_loc_changed // 0' "$STATE_FILE")
+CUM_REVIEWS=$(jq -r '.cum_reviews // 0' "$STATE_FILE")
+CONSEC_FAIL=$(jq -r '.consecutive_same_failure // 0' "$STATE_FILE")
+
 NOW_EPOCH=$(date +%s)
 
-# Gate 2: schema
-[ "$SCHEMA" = "$SCHEMA_VERSION" ] || fail_open "schema mismatch (got=$SCHEMA expected=$SCHEMA_VERSION)"
+# Gate 2: schema (accept any version in SCHEMA_VERSIONS_OK)
+case " $SCHEMA_VERSIONS_OK " in
+  *" $SCHEMA "*) ;;
+  *) fail_open "schema mismatch (got=$SCHEMA expected one of: $SCHEMA_VERSIONS_OK)" ;;
+esac
 
 # Gate 3: active
 [ "$ACTIVE" = "true" ] || cleanup_and_approve "state.active != true"
@@ -171,7 +187,24 @@ if [ -f "$INFLIGHT_FILE" ]; then
   exit 0
 fi
 
-# Gate 8: plan_path absolute + exists
+# Mode dispatch: plan mode keeps the historical gates 8-9 + REASON builder.
+# task mode (T1 placeholder) approves without injection — T4 fills in the
+# task-specific gates and prompt. This guarantees:
+#   - v1 state (mode=plan default) is byte-equivalent.
+#   - A hand-crafted task state between T1 and T4 lands cleanly (approve),
+#     never silent-traps the user.
+case "$MODE" in
+  plan) ;;
+  task)
+    log "task mode placeholder (T1 — T4 fills): approve without inject"
+    approve
+    ;;
+  *)
+    fail_open "unknown mode in state: $MODE"
+    ;;
+esac
+
+# Gate 8: plan_path absolute + exists (plan mode only)
 case "$PLAN_PATH" in
   /*) ;;
   *)  fail_open "plan_path not absolute: $PLAN_PATH" ;;
@@ -207,6 +240,20 @@ if [ "$MAX_MINUTES" -gt 0 ] && [ "$STARTED_AT" -gt 0 ]; then
   if [ "$ELAPSED_SEC" -ge "$CAP_SEC" ]; then
     cleanup_and_approve "max_minutes reached (${ELAPSED_SEC}s >= ${CAP_SEC}s / ${MAX_MINUTES}min cap)"
   fi
+fi
+
+# Gates 10c-f: cumulative caps (v2; v1 state defaults to 999999/0 so no-op).
+if [ "$CUM_FILES" -ge "$MAX_FILES" ]; then
+  cleanup_and_approve "max_files reached ($CUM_FILES >= $MAX_FILES)"
+fi
+if [ "$CUM_LOC" -ge "$MAX_LOC" ]; then
+  cleanup_and_approve "max_loc reached ($CUM_LOC >= $MAX_LOC)"
+fi
+if [ "$CUM_REVIEWS" -ge "$MAX_REVIEWS" ]; then
+  cleanup_and_approve "max_reviews reached ($CUM_REVIEWS >= $MAX_REVIEWS)"
+fi
+if [ "$CONSEC_FAIL" -ge 2 ]; then
+  cleanup_and_approve "same verify failure $CONSEC_FAIL times in a row"
 fi
 
 # Gate 11: Open Questions in previous brief?
