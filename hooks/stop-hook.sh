@@ -33,11 +33,17 @@
 
 set -u
 
-LOG_FILE=".claude/dual-review-loop.log"
-STATE_FILE=".claude/dual-review-loop.state.json"
-LOCK_DIR=".claude/dual-review-loop.lock"
-INFLIGHT_FILE=".claude/dual-review-loop.inflight"
-REVIEWS_DIR=".claude/reviews"
+# Anchor every path + git call to a stable repo root rather than the hook's
+# cwd (which can drift in multi-repo Claude Code sessions). We resolve from
+# `git rev-parse --show-toplevel` once, falling back to cwd when not in a
+# git repo. All subsequent git calls use `git -C "$REPO_ROOT"`.
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+
+LOG_FILE="$REPO_ROOT/.claude/dual-review-loop.log"
+STATE_FILE="$REPO_ROOT/.claude/dual-review-loop.state.json"
+LOCK_DIR="$REPO_ROOT/.claude/dual-review-loop.lock"
+INFLIGHT_FILE="$REPO_ROOT/.claude/dual-review-loop.inflight"
+REVIEWS_DIR="$REPO_ROOT/.claude/reviews"
 IDLE_TIMEOUT_SECONDS=$((24 * 3600))
 PHANTOM_GRACE_SECONDS=600   # if hook fires within 10min of last inject, assume continuation
 # v1: plan-mode only (legacy). v2: adds `mode` field + cumulative gates +
@@ -132,7 +138,10 @@ NOW_EPOCH=$(date +%s)
 # Gate 2: schema (accept any version in SCHEMA_VERSIONS_OK)
 case " $SCHEMA_VERSIONS_OK " in
   *" $SCHEMA "*) ;;
-  *) fail_open "schema mismatch (got=$SCHEMA expected one of: $SCHEMA_VERSIONS_OK)" ;;
+  # Preserve state on mismatch (could be a future-schema downgrade by an
+  # older hook). fail_open here would nuke the user's loop; soft-pause lets
+  # them downgrade/upgrade manually instead.
+  *) soft_pause "schema mismatch (got=$SCHEMA expected one of: $SCHEMA_VERSIONS_OK) — state preserved; downgrade hook or cancel manually" ;;
 esac
 
 # Gate 3: active
@@ -160,11 +169,19 @@ if [ "$LAST_INJECTED_ITER" -gt 0 ]; then
       CONTINUATION=1
     fi
   fi
-  # Strategy B: transcript sentinel check. ERE regex accepts both shapes so
-  # task-mode iterations past the time-window grace are still recognized
-  # (dual review #8 — sup M1 / codex high #2).
+  # Strategy B: transcript sentinel check. Mode-pinned (no cross-mode escape)
+  # and digit-anchored ("iter 1" must not match "iter 10/11/...").
+  # We still scan the whole transcript (parsing JSONL last-user-message safely
+  # across schema variants is brittle); the digit anchor + mode pin + iter#
+  # equality together make stale matches structurally rare. Hook-owned counter
+  # advances LAST_INJECTED_ITER each fire, so once iter advances the old
+  # sentinel for iter N stops matching iter N+1's check.
   if [ "$CONTINUATION" -eq 0 ] && [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
-    if grep -qE "\[dual-review-loop( task)? iter $LAST_INJECTED_ITER" "$TRANSCRIPT_PATH" 2>/dev/null; then
+    case "$MODE" in
+      task) SENTINEL_RE="\[dual-review-loop task iter ${LAST_INJECTED_ITER}[^0-9]" ;;
+      *)    SENTINEL_RE="\[dual-review-loop iter ${LAST_INJECTED_ITER}[^0-9]" ;;
+    esac
+    if grep -qE "$SENTINEL_RE" "$TRANSCRIPT_PATH" 2>/dev/null; then
       CONTINUATION=1
     fi
   fi
@@ -264,9 +281,11 @@ fi
 CUM_FILES=0
 CUM_LOC=0
 CUM_REVIEWS=0
-if [ -n "$STARTED_AT_SHA" ]; then
-  # Resolve repo root from the project — STATE_FILE lives at <cwd>/.claude/...
-  if STATS=$(git diff --shortstat "$STARTED_AT_SHA" HEAD 2>/dev/null); then
+if [ -n "$STARTED_AT_SHA" ] && git -C "$REPO_ROOT" cat-file -e "$STARTED_AT_SHA" 2>/dev/null; then
+  # Baseline SHA still resolvable in this repo (rebase/squash-merge could have
+  # orphaned it; in that case we soft-pause below rather than silently treat
+  # the run as 0-LOC and bypass budget caps).
+  if STATS=$(git -C "$REPO_ROOT" diff --shortstat "$STARTED_AT_SHA" HEAD 2>/dev/null); then
     # Parse "N files changed, X insertions(+), Y deletions(-)" (each piece optional).
     FILES_TOK=$(printf '%s' "$STATS" | grep -oE '[0-9]+ files? changed' | grep -oE '[0-9]+' | head -1)
     INS_TOK=$(printf '%s' "$STATS"  | grep -oE '[0-9]+ insertions?'    | grep -oE '[0-9]+' | head -1)
@@ -274,9 +293,23 @@ if [ -n "$STARTED_AT_SHA" ]; then
     CUM_FILES=${FILES_TOK:-0}
     CUM_LOC=$(( ${INS_TOK:-0} + ${DEL_TOK:-0} ))
   fi
+elif [ -n "$STARTED_AT_SHA" ]; then
+  # SHA exists in state but not in repo (rebase / squash-merge dropped it).
+  # Silently leaving CUM_*=0 would disable budget caps; soft-pause for the
+  # user to decide (re-baseline by editing state, or cancel cleanly).
+  soft_pause "started_at_sha=$STARTED_AT_SHA no longer resolvable (rebase?) — cumulative caps cannot be enforced; resolve manually or cancel"
 fi
-CUM_REVIEWS=$(ls "$REVIEWS_DIR"/iter-*.md 2>/dev/null | wc -l | tr -d ' ')
-CUM_REVIEWS=${CUM_REVIEWS:-0}
+# Review-count gate: count files written **after** loop start so prior runs'
+# briefs don't pre-exhaust max_reviews. Hook records reviews_baseline on its
+# first fire (when iteration was still 0); subsequent fires use that.
+REVIEWS_BASELINE=$(jq -r '.reviews_baseline // -1' "$STATE_FILE")
+CUR_REVIEWS_COUNT=$(ls "$REVIEWS_DIR"/iter-*.md 2>/dev/null | wc -l | tr -d ' ')
+CUR_REVIEWS_COUNT=${CUR_REVIEWS_COUNT:-0}
+if [ "$REVIEWS_BASELINE" = "-1" ]; then
+  REVIEWS_BASELINE=$CUR_REVIEWS_COUNT
+fi
+CUM_REVIEWS=$(( CUR_REVIEWS_COUNT - REVIEWS_BASELINE ))
+[ "$CUM_REVIEWS" -lt 0 ] && CUM_REVIEWS=0
 
 if [ "$CUM_FILES" -ge "$MAX_FILES" ]; then
   cleanup_and_approve "max_files reached ($CUM_FILES >= $MAX_FILES)"
@@ -332,12 +365,14 @@ mkdir -p "$REVIEWS_DIR" 2>/dev/null
 TEMP_FILE="$(mktemp "${STATE_FILE}.tmp.XXXXXX" 2>/dev/null)" || fail_open "mktemp failed"
 jq --argjson next "$NEXT_ITER" \
    --argjson now "$NOW_EPOCH" \
+   --argjson baseline "$REVIEWS_BASELINE" \
    --arg brief "$NEXT_BRIEF_PATH" \
    '.iteration = $next
     | .last_iter_at_epoch = $now
     | .last_injected_at_epoch = $now
     | .last_injected_iter = $next
-    | .last_brief_path = $brief' \
+    | .last_brief_path = $brief
+    | .reviews_baseline = $baseline' \
    "$STATE_FILE" > "$TEMP_FILE" 2>/dev/null
 
 if [ ! -s "$TEMP_FILE" ]; then
@@ -434,9 +469,8 @@ Process exactly ONE next concrete sub-step that advances this task:
 6. Re-verify (re-run task tests / verify command)
 7. Append an iteration entry to the task log: \($log)
 8. Atomic commit: code changes + task log append + deferred-minor footer.
-9. Update state cumulative counters (cum_files_changed / cum_loc_changed / cum_reviews / consecutive_same_failure) BEFORE this hook re-fires, otherwise budget caps cannot fire. Use jq temp+mv on .claude/dual-review-loop.state.json.
-10. After commit lands: delete the in-flight marker (rm \($inflight)).
-11. Stop. The hook will re-fire for the next iter or terminate naturally.
+9. After commit lands: delete the in-flight marker (rm \($inflight)).
+10. Stop. The hook will re-fire for the next iter or terminate naturally.
 
 Budget caps (hook gates): max_files=\($max_files), max_loc=\($max_loc), max_reviews=\($max_reviews). Going over any → loop ends.
 
