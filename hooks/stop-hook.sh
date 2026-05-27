@@ -72,11 +72,19 @@ cleanup_and_approve() {
   exit 0
 }
 
-# Soft pause: do not inject this turn, but keep state for user-driven resume
+# Soft pause: do not inject this turn, but keep state for user-driven resume.
+# Optional 2nd arg = user-facing systemMessage (surfaced in Claude Code UI so
+# the user actually sees how to recover; without it the pause is silent and
+# users can't tell why their loop stopped advancing).
 soft_pause() {
   log "SOFT-PAUSE: $1 (state preserved)"
   rmdir "$LOCK_DIR" 2>/dev/null || true
-  printf '{"decision":"approve"}\n'
+  if [ "$#" -ge 2 ] && [ -n "$2" ]; then
+    jq -n --arg m "$2" '{"decision":"approve","systemMessage":$m}' 2>/dev/null \
+      || printf '{"decision":"approve"}\n'
+  else
+    printf '{"decision":"approve"}\n'
+  fi
   exit 0
 }
 
@@ -141,7 +149,8 @@ case " $SCHEMA_VERSIONS_OK " in
   # Preserve state on mismatch (could be a future-schema downgrade by an
   # older hook). fail_open here would nuke the user's loop; soft-pause lets
   # them downgrade/upgrade manually instead.
-  *) soft_pause "schema mismatch (got=$SCHEMA expected one of: $SCHEMA_VERSIONS_OK) — state preserved; downgrade hook or cancel manually" ;;
+  *) soft_pause "schema mismatch (got=$SCHEMA expected one of: $SCHEMA_VERSIONS_OK) — state preserved; downgrade hook or cancel manually" \
+       "dual-review-loop paused: state schema '$SCHEMA' unknown. To resume: install a hook supporting this schema, OR run /dual-review-loop:cancel-loop (or rm $STATE_FILE) to start over." ;;
 esac
 
 # Gate 3: active
@@ -177,9 +186,12 @@ if [ "$LAST_INJECTED_ITER" -gt 0 ]; then
   # advances LAST_INJECTED_ITER each fire, so once iter advances the old
   # sentinel for iter N stops matching iter N+1's check.
   if [ "$CONTINUATION" -eq 0 ] && [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+    # Anchor uses ([^0-9]|$) so end-of-line / end-of-file also terminates
+    # the iter# (bare `[^0-9]` would fail to match if a future format change
+    # ever drops the trailing `/MAX]` suffix that today's format guarantees).
     case "$MODE" in
-      task) SENTINEL_RE="\[dual-review-loop task iter ${LAST_INJECTED_ITER}[^0-9]" ;;
-      *)    SENTINEL_RE="\[dual-review-loop iter ${LAST_INJECTED_ITER}[^0-9]" ;;
+      task) SENTINEL_RE="\[dual-review-loop task iter ${LAST_INJECTED_ITER}([^0-9]|\$)" ;;
+      *)    SENTINEL_RE="\[dual-review-loop iter ${LAST_INJECTED_ITER}([^0-9]|\$)" ;;
     esac
     if grep -qE "$SENTINEL_RE" "$TRANSCRIPT_PATH" 2>/dev/null; then
       CONTINUATION=1
@@ -297,7 +309,8 @@ elif [ -n "$STARTED_AT_SHA" ]; then
   # SHA exists in state but not in repo (rebase / squash-merge dropped it).
   # Silently leaving CUM_*=0 would disable budget caps; soft-pause for the
   # user to decide (re-baseline by editing state, or cancel cleanly).
-  soft_pause "started_at_sha=$STARTED_AT_SHA no longer resolvable (rebase?) — cumulative caps cannot be enforced; resolve manually or cancel"
+  soft_pause "started_at_sha=$STARTED_AT_SHA no longer resolvable (rebase?) — cumulative caps cannot be enforced; resolve manually or cancel" \
+    "dual-review-loop paused: baseline commit $STARTED_AT_SHA was lost (rebase/squash/gc). To resume: edit '.started_at_sha' in $STATE_FILE to current HEAD (jq + temp+mv), OR run /dual-review-loop:cancel-loop. (The 'do not edit state' rule applies to hook-owned counter fields, not this recovery edit.)"
 fi
 # Review-count gate: count files written **after** loop start so prior runs'
 # briefs don't pre-exhaust max_reviews. Hook records reviews_baseline on its
@@ -309,7 +322,14 @@ if [ "$REVIEWS_BASELINE" = "-1" ]; then
   REVIEWS_BASELINE=$CUR_REVIEWS_COUNT
 fi
 CUM_REVIEWS=$(( CUR_REVIEWS_COUNT - REVIEWS_BASELINE ))
-[ "$CUM_REVIEWS" -lt 0 ] && CUM_REVIEWS=0
+# Negative delta means briefs were deleted under us. Just clamping to 0 would
+# silently disarm max_reviews until the count climbs back above the old
+# baseline. Re-baseline instead so the cap stays meaningful.
+if [ "$CUM_REVIEWS" -lt 0 ]; then
+  log "reviews_baseline re-init: count $CUR_REVIEWS_COUNT < baseline $REVIEWS_BASELINE (briefs deleted)"
+  REVIEWS_BASELINE=$CUR_REVIEWS_COUNT
+  CUM_REVIEWS=0
+fi
 
 if [ "$CUM_FILES" -ge "$MAX_FILES" ]; then
   cleanup_and_approve "max_files reached ($CUM_FILES >= $MAX_FILES)"
