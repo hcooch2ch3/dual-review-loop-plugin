@@ -80,7 +80,16 @@ Cancel preserves the task log (post-mortem artifact). Add `.claude/dual-review-l
 - **Plan mode blocks commits mid-loop** — if Claude Code's plan mode is active when the loop tries to commit, iteration freezes (inflight marker never cleared). Recovery: exit plan mode, manually `git commit`, then `rm .claude/dual-review-loop.inflight`. Hook resumes on next stop.
 - **Forward-fix only** — never `git revert` automatically. Wrong commit must be fixed forward.
 - **One concurrent loop per project** — state file existence gate. Mode-agnostic: a task-mode loop refuses plan-mode start and vice versa.
-- **Downgrading the plugin mid-loop kills active loops** — schema v2 state (mode/cumulative fields, task mode) is rejected by pre-task-mode v1 hooks (older releases), which fail-open and delete the state file. If you must downgrade while a loop is running: run `/dual-review-loop:cancel-loop` first, or accept the loss. Forward upgrades (v1 state running, hook upgraded to v2) are safe — the new hook defaults `mode=plan` and treats absent cumulative fields as Infinity.
+- **Downgrading the plugin mid-loop** — schema v2 state (mode/cumulative fields, task mode) is rejected by pre-task-mode v1 hooks (older releases), which fail-open and delete the state file. Current v2 hook does the opposite on an unknown schema (e.g., a future v3 state seen by a v2 hook): `soft_pause` with a `systemMessage` telling you to upgrade the hook or run `/dual-review-loop:cancel-loop`. If you must downgrade to a pre-v2 hook while a loop is running: cancel first, or accept the loss. Forward upgrades (v1 state running, hook upgraded to v2) are safe — the new hook defaults `mode=plan` and treats absent cumulative fields as Infinity.
+
+### Recovery: loop is paused, hook isn't advancing
+
+The hook `soft_pause`s (state preserved, no inject) in several scenarios. The Claude Code UI shows a `systemMessage` for the recoverable ones. Common cases:
+
+- **"baseline commit `<sha>` was lost (rebase/squash/gc)"** — your `started_at_sha` was orphaned by a rebase or `git gc`. Cumulative caps (`max_files` / `max_loc`) can't be enforced. To resume: edit `.started_at_sha` in `.claude/dual-review-loop.state.json` to current `HEAD` (jq + temp+mv) and the next stop fire continues. Or run `/dual-review-loop:cancel-loop` to abandon the run. (The "do not edit state" rule applies to hook-owned counter fields, not this recovery edit; `started_at_sha` is command-owned.)
+- **"state schema `<x>` unknown"** — see the downgrade note above. Install a hook that supports the schema, or cancel.
+- **Manual deletion of `.claude/reviews/iter-*.md` mid-run** — the `max_reviews` gate uses a hook-tracked baseline. Deleting briefs causes a "reviews_baseline re-init" log entry on the next fire (baseline drops to the new count); the cap stays meaningful. No user action needed, just be aware that manually rm'd briefs reset the budget window.
+- **Lock contention / different session / no-continuation signal** — these silent pauses are expected (concurrent hook fires auto-recover; second-session resume is intentional; user takeover stops the loop). If a loop seems stuck without a `systemMessage`, check `.claude/dual-review-loop.log` for the last `SOFT-PAUSE:` line.
 
 ## Architecture (quick reference)
 
