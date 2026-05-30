@@ -1,6 +1,6 @@
 {
   "name": "dual-review-loop",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Auto-iterate either a plan's checkbox tasks (plan mode) or a free-form inline task (task mode); each iteration runs dual-review as verifier, auto-applies Accept findings (≥ Important), atomic-commits. Stops on Open Questions / budget caps / cancel.",
   "author": {
     "name": "hcooch2ch3"
@@ -12,6 +12,5 @@
     "./commands/dual-review-loop.md",
     "./commands/dual-review-task.md",
     "./commands/cancel-loop.md"
-  ],
-  "hooks": "./hooks/hooks.json"
+  ]
 }
