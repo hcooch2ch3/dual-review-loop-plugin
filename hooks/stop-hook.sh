@@ -140,6 +140,11 @@ MAX_FILES=$(jq -r '.max_files // 999999' "$STATE_FILE")
 MAX_LOC=$(jq -r '.max_loc // 999999' "$STATE_FILE")
 MAX_REVIEWS=$(jq -r '.max_reviews // 999999' "$STATE_FILE")
 STARTED_AT_SHA=$(jq -r '.started_at_sha // ""' "$STATE_FILE")
+# HEAD recorded when the current in-flight iter was injected (hook-owned).
+# Gate 7 uses it as ground truth for "did this iter's commit land?" so marker
+# clearing no longer depends on the LLM running the prompt's `rm` step. Empty
+# for v1 / upgraded-mid-flight state → Gate 7 cannot detect → never false-advances.
+INFLIGHT_BASE_SHA=$(jq -r '.inflight_base_sha // ""' "$STATE_FILE")
 
 NOW_EPOCH=$(date +%s)
 
@@ -209,14 +214,58 @@ if [ "$((NOW_EPOCH - LAST_ACT))" -gt "$IDLE_TIMEOUT_SECONDS" ]; then
   cleanup_and_approve "idle timeout (>${IDLE_TIMEOUT_SECONDS}s)"
 fi
 
-# Gate 7: in-flight marker — previous iter not yet finalized
+# Gate 7: in-flight marker — previous iter not yet finalized.
+# UNION completion detection (dual review #11): the marker is hook-created but
+# was historically LLM-cleared (prompt step 9 `rm inflight`). When the LLM
+# never reached that step — plan mode blocking the commit being the canonical
+# case, also early stops / errors — the marker stayed and this gate became a
+# permanent dead-end (no advance, no re-inject) → frozen loop.
+# Now we advance when EITHER signal says the iter is done:
+#   (a) marker absent      → LLM cleared it (normal path, incl. legitimate
+#                            no-op iters that commit nothing; see task §6), OR
+#   (b) marker present BUT  → hook proves via git the commit landed
+#       commit landed         (HEAD moved forward past inflight_base_sha).
+# Soft-pause ONLY when the marker is present AND no commit landed. The git
+# backstop makes recovery auto-resume the moment a commit lands (Claude's or a
+# manual one) — the old manual `rm .inflight` recovery step is no longer needed.
 if [ -f "$INFLIGHT_FILE" ]; then
   INFLIGHT_ITER=$(cat "$INFLIGHT_FILE" 2>/dev/null || echo "?")
-  log "in-flight marker present (iter=$INFLIGHT_ITER) — previous iter incomplete, fail-open without iter++"
-  # Keep state; just don't inject. Marker stays so a debugger can see it.
-  rmdir "$LOCK_DIR" 2>/dev/null || true
-  printf '{"decision":"approve","systemMessage":"dual-review-loop: previous iter (%s) still in-flight; not advancing"}\n' "$INFLIGHT_ITER"
-  exit 0
+  COMMIT_LANDED=0
+  if [ -n "$INFLIGHT_BASE_SHA" ]; then
+    CUR_HEAD=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")
+    if [ -n "$CUR_HEAD" ] && [ "$CUR_HEAD" != "$INFLIGHT_BASE_SHA" ]; then
+      # HEAD moved. Confirm FORWARD motion (base is an ancestor of HEAD) so an
+      # unrelated reset/checkout doesn't read as a completed iter. Note:
+      # `merge-base --is-ancestor` exits 1 on a normal "not an ancestor" answer
+      # — it MUST stay inside this `if` or the ERR trap (top of file) would fire.
+      if git -C "$REPO_ROOT" merge-base --is-ancestor "$INFLIGHT_BASE_SHA" "$CUR_HEAD" 2>/dev/null; then
+        COMMIT_LANDED=1
+      fi
+    fi
+  fi
+  if [ "$COMMIT_LANDED" -eq 1 ]; then
+    log "in-flight iter $INFLIGHT_ITER: commit landed (HEAD $CUR_HEAD past base $INFLIGHT_BASE_SHA) — clearing marker, advancing"
+    rm -f "$INFLIGHT_FILE" 2>/dev/null || true
+    # Fall through to the normal advance path below (gates 8-11 + iter++).
+  else
+    # Marker present, no commit detected. Don't inject (no fighting plan mode).
+    # The recovery advice MUST differ by whether the git backstop is armed: when
+    # inflight_base_sha is empty (legacy v1 / non-git / upgraded mid-flight) we
+    # genuinely cannot auto-detect a landed commit, so manual recovery is still
+    # required and we must NOT claim auto-resume or "no commit since base"
+    # (dual review #11: Codex C2/C3 + code-reviewer P2 — over-promising message).
+    if [ -n "$INFLIGHT_BASE_SHA" ]; then
+      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} has not committed yet (plan mode can block commits, or it stopped early). It auto-resumes the moment a commit lands — exit plan mode and let it finish. If this iteration legitimately produced no commit, run /dual-review-loop:cancel-loop (or rm .claude/dual-review-loop.inflight)."
+    else
+      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} is in-flight but completion can't be auto-detected (no baseline SHA — legacy state or non-git repo). If the work already committed, rm .claude/dual-review-loop.inflight to resume; otherwise run /dual-review-loop:cancel-loop."
+    fi
+    log "in-flight marker present (iter=$INFLIGHT_ITER) — no commit detected; not advancing (base_sha=${INFLIGHT_BASE_SHA:-<none>})"
+    # Keep state + marker so the next fire / a debugger can still see it.
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+    jq -n --arg m "$PAUSE_MSG" '{"decision":"approve","systemMessage":$m}' 2>/dev/null \
+      || printf '{"decision":"approve","systemMessage":"dual-review-loop: previous iter still in-flight; not advancing"}\n'
+    exit 0
+  fi
 fi
 
 # Mode dispatch: plan/task share gates 10-11 + state update; gates 8-9
@@ -381,18 +430,26 @@ ITER_PADDED=$(printf '%03d' "$NEXT_ITER")
 NEXT_BRIEF_PATH="${REVIEWS_DIR}/iter-${ITER_PADDED}.md"
 mkdir -p "$REVIEWS_DIR" 2>/dev/null
 
+# HEAD at the moment we inject iter NEXT_ITER (before the LLM does any work).
+# Gate 7 on the NEXT fire compares HEAD against this to detect whether the
+# iter's commit landed — hook-owned completion signal, no LLM-`rm` dependence.
+# Empty when not a git repo → Gate 7 falls back to the marker-only path.
+NEXT_INFLIGHT_BASE_SHA=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")
+
 # Atomic state update — hook owns ALL state fields
 TEMP_FILE="$(mktemp "${STATE_FILE}.tmp.XXXXXX" 2>/dev/null)" || fail_open "mktemp failed"
 jq --argjson next "$NEXT_ITER" \
    --argjson now "$NOW_EPOCH" \
    --argjson baseline "$REVIEWS_BASELINE" \
    --arg brief "$NEXT_BRIEF_PATH" \
+   --arg inflightbase "$NEXT_INFLIGHT_BASE_SHA" \
    '.iteration = $next
     | .last_iter_at_epoch = $now
     | .last_injected_at_epoch = $now
     | .last_injected_iter = $next
     | .last_brief_path = $brief
-    | .reviews_baseline = $baseline' \
+    | .reviews_baseline = $baseline
+    | .inflight_base_sha = $inflightbase' \
    "$STATE_FILE" > "$TEMP_FILE" 2>/dev/null
 
 if [ ! -s "$TEMP_FILE" ]; then
