@@ -1,0 +1,73 @@
+# gate-matrix golden — RECORDS CURRENT BEHAVIOUR, NOT DESIRED BEHAVIOUR.
+#
+# Several rows deliberately freeze KNOWN DEFECTS so that fixing them shows up
+# as an intended diff rather than passing unnoticed. Each is listed with the
+# delta a correct fix SHOULD produce, so a reviewer can tell an expected
+# change from a regression without re-deriving it:
+#
+#   gate11-open-questions   now: state=N (a genuine question deletes the
+#                           state, so the user cannot resume after answering)
+#                           after a fix: state=Y with a systemMessage
+#   gate11n1-none-bullet    now: STOPS on a '- 없음' placeholder — the
+#                           false positive measured at 77% of briefs
+#                           after a fix: decision=block (advances)
+#   gate11n2-h3-heading     now: ADVANCES past a real question under a
+#                           '###' heading (regex demands exactly '## ')
+#                           after a fix: approve, state deleted/paused
+#   gate11n3-star-bullet    now: ADVANCES past a real question on a '*'
+#                           bullet, though '*' is a list marker elsewhere
+#                           in the same file. after a fix: stops
+#   gate01-bad-json         now: state=N — a merely CORRUPT file (killed
+#                           editor save, disk-full) is deleted, discarding
+#                           a recoverable iteration count and baseline SHA
+#   gate04 / gate05         also: systemMessage is EMPTY, so the user sees
+#                           a turn end with no explanation. These are the
+#                           two most frequent events in the field baseline
+#                           (214 fires / 58%).
+#   gate03-inactive         now: fine. Becomes a defect if a pause ever
+#                           sets active=false — this row is then the
+#                           silent-deletion path on the next fire.
+#   gate10b-max-minutes     now: state=N — the wall-clock cap deletes
+#                           state rather than pausing it
+#   gate09b-dirty-blocks    now: completion unreachable because an untracked
+#                           state file / brief keeps the tree dirty
+#                           after a fix: gitignore guidance covers .claude/
+#   gate09c-plan-outside-repo  now: 'all tasks complete' + state deleted even
+#                           though the real repo tree is DIRTY — Gate 9 checks
+#                           dirname(plan_path), not the repo root
+#                           after a fix: SOFT-PAUSE, state=Y active=true
+#   gate04 / gate05         now: active=true after a takeover pause, so the
+#                           state stays armed and can be resurrected later
+#                           after a fix: active=false on takeover pauses only
+#   gate12-lock-held        now: lock=N — this invocation FAILED to acquire
+#                           the lock and then deleted the holder's lock,
+#                           destroying mutual exclusion
+#                           after a fix: lock=Y (a non-owner must not rmdir)
+#
+# Do not read this file as a specification. A diff here is a question
+# ("did I mean to change this?"), not automatically a failure. Regenerating
+# with --update is how you ACCEPT a delta — walk the rows above first.
+#
+# Columns: label | decision | state/active/marker(value)/lock/iteration |
+#          systemMessage | log tail
+# Regenerate: bash tests/gate-matrix.test.sh --update
+advance-inject             | block   | state=Y active=true  marker=Y(2) lock=N iter=2/2 | sentinel="[dual-review-loop iter 2/20]" enforce=1 | dual-review-loop plan iter 2/20 | iter 2 → injecting (brief target: <TMP>/.claude/reviews/iter-002.md)
+gate00-no-state            | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | 
+gate01-bad-json            | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | FAIL-OPEN: state file is not valid JSON
+gate02-schema-unknown      | approve | state=Y active=true  marker=N(-) lock=N iter=1/0 | - | dual-review-loop paused: state schema 'v9' unknown. To resume: install a hook supporting this schema, OR run /dual-review-loop:cancel-loop (or rm <TMP>/.claude/dual-review-loop.state.json) to start over. | SOFT-PAUSE: schema mismatch (got=v9 expected one of: v1 v2) — state preserved; downgrade hook or cancel manually (state preserved)
+gate03-inactive            | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | state.active != true
+gate04-session-mismatch    | approve | state=Y active=true  marker=N(-) lock=N iter=1/0 | - |  | SOFT-PAUSE: different session (test-session != other-session) (state preserved)
+gate05-no-continuation     | approve | state=Y active=true  marker=N(-) lock=N iter=1/1 | - |  | SOFT-PAUSE: no continuation signal (last_injected_iter=1, gap=<N>s) — user likely took control (state preserved)
+gate06-idle-timeout        | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | idle timeout (>86400s)
+gate07-inflight-nocommit   | approve | state=Y active=true  marker=Y(1) lock=N iter=1/0 | - | dual-review-loop: iter 1 has not committed yet (plan mode can block commits, or it stopped early). It auto-resumes the moment a commit lands — exit plan mode and let it finish. If this iteration legitimately produced no commit, run /dual-review-loop:cancel-loop (or rm .claude/dual-review-loop.inflight). | in-flight marker present (iter=1) — no commit detected; not advancing (base_sha=<SHA>)
+gate08-plan-relative       | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | FAIL-OPEN: plan_path not absolute: relative/plan.md
+gate09a-all-complete       | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | all tasks complete after 1 iterations
+gate09b-dirty-blocks       | approve | state=Y active=true  marker=N(-) lock=N iter=1/0 | - |  | SOFT-PAUSE: no unfinished tasks but uncommitted changes present (state preserved)
+gate09c-plan-outside-repo  | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | all tasks complete after 1 iterations
+gate10-max-iterations      | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | max_iterations reached (20 >= 20)
+gate10b-max-minutes        | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | max_minutes reached (<N>s >= 60s / 1min cap)
+gate11-open-questions      | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | Open Questions detected in last brief — user decision needed
+gate11n1-none-bullet       | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | Open Questions detected in last brief — user decision needed
+gate11n2-h3-heading        | block   | state=Y active=true  marker=Y(2) lock=N iter=2/2 | sentinel="[dual-review-loop iter 2/20]" enforce=1 | dual-review-loop plan iter 2/20 | iter 2 → injecting (brief target: <TMP>/.claude/reviews/iter-002.md)
+gate11n3-star-bullet       | block   | state=Y active=true  marker=Y(2) lock=N iter=2/2 | sentinel="[dual-review-loop iter 2/20]" enforce=1 | dual-review-loop plan iter 2/20 | iter 2 → injecting (brief target: <TMP>/.claude/reviews/iter-002.md)
+gate12-lock-held           | approve | state=Y active=true  marker=N(-) lock=N iter=1/0 | - |  | SOFT-PAUSE: lock contention (state preserved)
