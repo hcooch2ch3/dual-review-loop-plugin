@@ -27,7 +27,9 @@
 # fixture is plan mode.
 
 set -u
-export LC_ALL=C
+# LC_ALL is applied per command, never exported — the hook inherits our
+# environment and pins no locale of its own, so exporting would run the subject
+# under test in a locale its users do not have. See gate-matrix.test.sh.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 
 HOOK="$(cd "$(dirname "$0")/.." && pwd)/hooks/stop-hook.sh"
@@ -38,8 +40,15 @@ PASS=0; FAIL=0
 fail() { echo "  ✗ FAIL: $1"; FAIL=$((FAIL+1)); }
 ok()   { echo "  ✓ $1"; PASS=$((PASS+1)); }
 
+# NOTE on the subshell: it must NOT be the left operand of `||`. Bash suppresses
+# errexit for any command in an AND-OR list other than the last, INCLUDING a
+# subshell that sets `set -e` itself. Measured: `( set -e; false; echo X ) || \
+# return 1` prints X and returns 0 — a failed `git init` would be followed by a
+# successful `mkdir` and setup would report success, handing the caller a
+# non-repo directory. Run it standalone and inspect $? afterwards.
 setup_repo() {
-  local tmp; tmp=$(mktemp -d "${TMPDIR:-/tmp}/drl-sentinel-$1.XXXXXX") || return 1
+  local tmp rc
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/drl-sentinel-$1.XXXXXX") || return 1
   (
     set -e
     cd "$tmp"
@@ -50,7 +59,12 @@ setup_repo() {
     git add .gitignore plan.md
     git commit -qm initial
     mkdir -p .claude
-  ) || return 1
+  )
+  rc=$?
+  [ "$rc" -eq 0 ] || { rm -rf "$tmp"; return 1; }
+  # Prove the fixture is what the caller expects before handing it over.
+  git -C "$tmp" rev-parse --is-inside-work-tree >/dev/null 2>&1 || { rm -rf "$tmp"; return 1; }
+  git -C "$tmp" rev-parse HEAD >/dev/null 2>&1 || { rm -rf "$tmp"; return 1; }
   echo "$tmp"
 }
 
@@ -142,10 +156,17 @@ for mode in plan task; do
   # 5. The Open Questions enforcement literal must be present. Planned work
   #    edits it in both arms; dropping it from one lets the LLM run past a STOP
   #    condition in that mode only.
-  if printf '%s' "$reason" | grep -q 'Open Questions'; then
-    ok "$mode: prompt carries the Open Questions enforcement clause"
+  # Matching the bare phrase was vacuous — a clause telling the model to IGNORE
+  # Open Questions would have satisfied it. Require the mandatory instruction.
+  if printf '%s' "$reason" | grep -q 'Open Questions" non-empty: STOP'; then
+    ok "$mode: prompt carries the mandatory Open Questions STOP clause"
   else
-    fail "$mode: prompt lost the Open Questions enforcement clause"
+    fail "$mode: prompt lost or weakened the Open Questions STOP clause"
+  fi
+  if printf '%s' "$reason" | grep -q 'Do NOT continue'; then
+    ok "$mode: STOP clause still forbids continuing"
+  else
+    fail "$mode: STOP clause no longer forbids continuing"
   fi
 
   rm -rf "$t"

@@ -23,18 +23,31 @@
 
 set -u
 
-# Pin collation and locale-sensitive tool behaviour. glibc gives punctuation
-# near-ignored primary weight under a UTF-8 locale, so `gate10-…` vs
-# `gate10b-…` can sort in a DIFFERENT order than under C — the golden would
-# then diff on Linux with no semantic change, which trains reviewers to
-# reflexively --update. BSD collation happens to match C, which is exactly why
-# macOS-only testing cannot see this.
-export LC_ALL=C
-
+# Collation is pinned PER COMMAND, never exported.
+#
+# The reason to pin it: glibc gives punctuation near-ignored primary weight
+# under a UTF-8 locale, so `gate10-…` vs `gate10b-…` can sort in a DIFFERENT
+# order than under C. The golden would then diff on Linux with no semantic
+# change, which trains reviewers to reflexively --update. BSD collation happens
+# to match C, which is exactly why macOS-only testing cannot see it.
+#
+# The reason NOT to export it: the hook inherits the environment we run it in
+# and pins no locale of its own (`grep -c 'LC_ALL\|LANG=' hooks/stop-hook.sh`
+# → 0). Exporting would run the subject under test in a locale its users do not
+# have, so a locale-sensitive path — the hook parses English `git diff
+# --shortstat` tokens to compute the cumulative caps — could pass here while
+# failing in production. Harness determinism must not be bought by changing the
+# subject's environment.
+#
 # Make the throwaway git repos hermetic. Without this the developer's global
 # config leaks in: `core.excludesFile` containing .claude/ silently flips the
 # gate09b row, `commit.gpgsign` can block on pinentry and hang the suite, and
 # `core.hooksPath` runs their pre-commit hooks inside our temp repo.
+#
+# Accepted trade-off: this DOES reach the hook's own git calls, so a user whose
+# global config matters (e.g. a global excludesFile covering .claude/) sees
+# behaviour these fixtures do not reproduce. Determinism wins for a golden
+# baseline; gate09a/gate09b encode both sides of that particular case anyway.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 
 HOOK="$(cd "$(dirname "$0")/.." && pwd)/hooks/stop-hook.sh"
@@ -55,9 +68,11 @@ trap 'rm -f "$ACTUAL"' EXIT
 # never gitignored the plugin's own files — the plugin's state file and briefs
 # then keep the tree permanently dirty. Both cases are golden rows.
 setup_repo() {
-  local tmp; tmp=$(mktemp -d "${TMPDIR:-/tmp}/drl-matrix-$1.XXXXXX")
+  local tmp rc; tmp=$(mktemp -d "${TMPDIR:-/tmp}/drl-matrix-$1.XXXXXX") \
+    || { echo "FATAL: mktemp failed" >&2; exit 2; }
   (
-    cd "$tmp" || exit 1
+    set -e
+    cd "$tmp"
     git init -q
     git config user.email t@t.t; git config user.name t
     printf '# plan\n\n- [ ] do something\n' > plan.md
@@ -69,6 +84,13 @@ setup_repo() {
     git commit -qm initial
     mkdir -p .claude
   )
+  rc=$?
+  # The subshell is deliberately NOT the left operand of `||`: bash suppresses
+  # errexit there, so a failed `git init` would still return success and the
+  # caller would silently run a gate case against a non-repo directory.
+  [ "$rc" -eq 0 ] || { echo "FATAL: setup_repo $1 failed (rc=$rc)" >&2; exit 2; }
+  git -C "$tmp" rev-parse HEAD >/dev/null 2>&1 \
+    || { echo "FATAL: setup_repo $1 produced no HEAD" >&2; exit 2; }
   echo "$tmp"
 }
 
@@ -111,13 +133,13 @@ write_state() { printf '%s' "$1" > "$2/.claude/dual-review-loop.state.json"; }
 norm() {
   local s=$1 tmp=$2 real=$3
   printf '%s' "$s" \
-    | sed -e "s|$real|<TMP>|g" -e "s|$tmp|<TMP>|g" -e "s|$HOME|<HOME>|g" \
+    | LC_ALL=C sed -e "s|$real|<TMP>|g" -e "s|$tmp|<TMP>|g" -e "s|$HOME|<HOME>|g" \
           -e 's|^\[[0-9TZ:-]*\] ||' \
           -e 's|gap=[0-9]*s|gap=<N>s|g' \
           -e 's|reached ([0-9]*s|reached (<N>s|g' \
           -e 's|(line [0-9]*)|(line <N>)|g' \
           -e 's|[0-9a-f]\{40\}|<SHA>|g' \
-    | tr '\n' ' ' | sed -e 's/  */ /g' -e 's/ $//'
+    | LC_ALL=C tr '\n' ' ' | LC_ALL=C sed -e 's/  */ /g' -e 's/ $//'
 }
 
 # Fingerprint the injected prompt instead of freezing it.
@@ -126,7 +148,8 @@ norm() {
 # signal. Two things about it are contractual and cheap to pin:
 #   1. the first line, which is the sentinel Gate 5 Strategy B greps for. Break
 #      its format and every real loop soft-pauses after iter 1, silently.
-#   2. how many times the Open Questions enforcement literal appears. Release A
+#   2. how many OCCURRENCES of the Open Questions enforcement literal are
+#      present (grep -o | wc -l, not grep -c, which counts matching LINES). Release A
 #      edits that literal in the hook's two prompt arms; dropping one is
 #      otherwise invisible here.
 reason_fingerprint() {
@@ -134,7 +157,7 @@ reason_fingerprint() {
   [ -n "$r" ] || { printf '%s' "-"; return; }
   local first count
   first=$(printf '%s' "$r" | sed -n '1p')
-  count=$(printf '%s' "$r" | grep -c 'non-empty: STOP' || true)
+  count=$(printf '%s' "$r" | grep -o 'non-empty: STOP' | wc -l | tr -d ' ')
   printf 'sentinel="%s" enforce=%s' "$first" "$count"
 }
 
@@ -244,7 +267,16 @@ observe "gate09b-dirty-blocks" "$t"
 # SKIPPED, and completion is declared even though the real repo tree is dirty.
 # Verified: without this row, rescoping PLAN_DIR to REPO_ROOT produces zero
 # golden diff — i.e. the matrix could not see that fix land at all.
-t=$(setup_repo g9c)                     # deliberately no gitignore -> dirty tree
+# The dirt here is a MODIFIED TRACKED SOURCE FILE, not the plugin's own state.
+# .claude/ is gitignored on purpose: if the fixture relied on the untracked
+# state file to dirty the tree, an implementation that merely noticed plugin
+# metadata — or special-cased `.claude` — would pass while still declaring
+# completion over uncommitted USER code. gate09b already covers the
+# plugin-metadata case; this row must fail for a different reason.
+t=$(setup_repo g9c gitignore)
+printf 'user source, committed\n' > "$t/src.txt"
+(cd "$t" && git add src.txt && git commit -qm "add source")
+printf 'user source, MODIFIED and uncommitted\n' > "$t/src.txt"
 outside=$(mktemp -d "${TMPDIR:-/tmp}/drl-matrix-outside.XXXXXX")
 printf '# plan\n\n- [x] done\n' > "$outside/plan.md"
 write_state "$(base_state "$t" | jq --arg p "$outside/plan.md" '.plan_path=$p')" "$t"
@@ -336,9 +368,16 @@ if [ "$UPDATE" -eq 1 ] || [ "$MISSING_GOLDEN" -eq 1 ]; then
     echo "# delta a correct fix SHOULD produce, so a reviewer can tell an expected"
     echo "# change from a regression without re-deriving it:"
     echo "#"
-    echo "#   gate11-open-questions   now: state=N (a genuine question deletes the"
-    echo "#                           state, so the user cannot resume after answering)"
-    echo "#                           after a fix: state=Y with a systemMessage"
+    echo "#   gate11-open-questions   now: state=N and an EMPTY systemMessage — a"
+    echo "#                           genuine question deletes the state silently, so"
+    echo "#                           the user cannot resume after answering it."
+    echo "#                           after Release A: decision=approve, state=N"
+    echo "#                           (UNCHANGED), marker removed, and a NON-EMPTY"
+    echo "#                           systemMessage naming the brief and the bullet."
+    echo "#                           Terminal cleanup is deliberately KEPT in A;"
+    echo "#                           resumability needs the Release C resume path"
+    echo "#                           and is out of scope until then. Do not expect"
+    echo "#                           state=Y here or a correct A reads as partial."
     echo "#   gate11n1-none-bullet    now: STOPS on a '- 없음' placeholder — the"
     echo "#                           false positive measured at 77% of briefs"
     echo "#                           after a fix: decision=block (advances)"
@@ -401,9 +440,9 @@ fi
 echo "== gate matrix: comparing against golden =="
 EXPECTED=$(mktemp "${TMPDIR:-/tmp}/drl-expected.XXXXXX")
 trap 'rm -f "$ACTUAL" "$EXPECTED"' EXIT
-grep -v '^#' "$GOLDEN" > "$EXPECTED"
+LC_ALL=C grep -v '^#' "$GOLDEN" > "$EXPECTED"
 
-if diff -u "$EXPECTED" "$ACTUAL"; then
+if LC_ALL=C diff -u "$EXPECTED" "$ACTUAL"; then
   echo "  ✓ all $(wc -l < "$EXPECTED" | tr -d ' ') gate observations unchanged"
   exit 0
 fi

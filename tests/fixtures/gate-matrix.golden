@@ -5,9 +5,16 @@
 # delta a correct fix SHOULD produce, so a reviewer can tell an expected
 # change from a regression without re-deriving it:
 #
-#   gate11-open-questions   now: state=N (a genuine question deletes the
-#                           state, so the user cannot resume after answering)
-#                           after a fix: state=Y with a systemMessage
+#   gate11-open-questions   now: state=N and an EMPTY systemMessage — a
+#                           genuine question deletes the state silently, so
+#                           the user cannot resume after answering it.
+#                           after Release A: decision=approve, state=N
+#                           (UNCHANGED), marker removed, and a NON-EMPTY
+#                           systemMessage naming the brief and the bullet.
+#                           Terminal cleanup is deliberately KEPT in A;
+#                           resumability needs the Release C resume path
+#                           and is out of scope until then. Do not expect
+#                           state=Y here or a correct A reads as partial.
 #   gate11n1-none-bullet    now: STOPS on a '- 없음' placeholder — the
 #                           false positive measured at 77% of briefs
 #                           after a fix: decision=block (advances)
