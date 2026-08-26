@@ -172,6 +172,95 @@ for mode in plan task; do
   rm -rf "$t"
 done
 
+# ---------------------------------------------------------------------------
+# ROUND TRIP — feed the emitted sentinel back through the REAL Gate 5.
+#
+# Everything above pins the PRODUCER (the emitted prompt) against a regex this
+# file re-types itself. That is not the contract. The contract is that Gate 5
+# Strategy B can find the sentinel in a transcript — and its `SENTINEL_RE` lives
+# in the hook, not here. Measured: replacing the hook's literal with
+# `\[XX-dual-review-loop…` left the entire suite GREEN, because no test in the
+# repo ever passed a non-empty transcript_path. A hand-copied mirror cannot
+# detect drift in the thing it mirrors.
+#
+# This also repairs the vacuous digit-anchor assertion above: testing `iter N`
+# against a string this file built is provably true either way. The anchor only
+# means something when the hook's own grep evaluates it.
+# ---------------------------------------------------------------------------
+
+roundtrip_state() {   # $1=tmp $2=injected_iter $3=age_seconds
+  local tmp=$1 iter=$2 age=$3 now base
+  now=$(date +%s); base=$(git -C "$tmp" rev-parse HEAD)
+  jq -n --arg plan "$tmp/plan.md" --argjson now "$now" --arg base "$base" \
+        --argjson iter "$iter" --argjson age "$age" '{
+    schema:"v2", mode:"plan", active:true, plan_path:$plan,
+    iteration:$iter, max_iterations:20, max_minutes:0,
+    max_files:999999, max_loc:999999, max_reviews:999999,
+    session_id:"test-session",
+    started_at_epoch:($now-$age), last_iter_at_epoch:($now-$age),
+    last_injected_at_epoch:($now-$age), last_injected_iter:$iter,
+    started_at_sha:$base, inflight_base_sha:$base,
+    last_brief_path:"", reviews_baseline:0
+  }' > "$tmp/.claude/dual-review-loop.state.json"
+}
+
+fire_with_transcript() {   # $1=tmp $2=transcript_path -> echoes decision
+  jq -n --arg tp "$2" '{session_id:"test-session", transcript_path:$tp, hook_event_name:"Stop"}' \
+    | (cd "$1" && bash "$HOOK" 2>/dev/null) | jq -r '.decision // ""' 2>/dev/null
+}
+
+echo ""
+echo "-- round trip through the hook's own SENTINEL_RE --"
+
+t=$(setup_repo roundtrip) || { fail "roundtrip: repo setup failed"; t=""; }
+if [ -n "$t" ]; then
+  sentinel=$(reason_for_mode "$t" plan | sed -n '1p')
+  n=$(printf '%s' "$sentinel" | sed -n 's|.*iter \([0-9]\{1,\}\)/.*|\1|p')
+  # AGE must sit in the window where Strategy B alone decides:
+  #   > PHANTOM_GRACE_SECONDS (600)  so Strategy A's time window cannot answer
+  #   < IDLE_TIMEOUT_SECONDS (86400) so Gate 6 does not reap the state first.
+  # The first draft used 100000 and the positive case failed — Gate 5 passed
+  # and Gate 6 then killed the loop on idle, which reads exactly like a broken
+  # consumer. Keep this inside both bounds.
+  AGE=3600
+  rm -f "$t/.claude/dual-review-loop.inflight"
+
+  # positive: a transcript carrying this exact sentinel must resume the loop.
+  printf 'noise\n%s\nmore noise\n' "$sentinel" > "$t/transcript.txt"
+  roundtrip_state "$t" "$n" "$AGE"
+  d=$(fire_with_transcript "$t" "$t/transcript.txt")
+  if [ "$d" = "block" ]; then
+    ok "round trip: hook's own SENTINEL_RE finds the emitted sentinel (iter $n)"
+  else
+    fail "round trip: hook did NOT recognise its own sentinel (decision=$d) — Gate 5 consumer is broken"
+  fi
+  rm -f "$t/.claude/dual-review-loop.inflight"
+
+  # negative: iter N must not be satisfied by a longer number starting with N.
+  # This exercises the real ([^0-9]|$) anchor rather than a copy of it.
+  printf 'noise\n[dual-review-loop iter %s0/20]\n' "$n" > "$t/transcript.txt"
+  roundtrip_state "$t" "$n" "$AGE"
+  d=$(fire_with_transcript "$t" "$t/transcript.txt")
+  if [ "$d" = "approve" ]; then
+    ok "round trip: iter ${n}0 in the transcript does not satisfy iter $n"
+  else
+    fail "round trip: digit anchor is broken in the hook — iter ${n}0 matched iter $n (decision=$d)"
+  fi
+  rm -f "$t/.claude/dual-review-loop.inflight"
+
+  # negative: a task-mode sentinel must not satisfy a plan-mode loop.
+  printf 'noise\n[dual-review-loop task iter %s/20]\n' "$n" > "$t/transcript.txt"
+  roundtrip_state "$t" "$n" "$AGE"
+  d=$(fire_with_transcript "$t" "$t/transcript.txt")
+  if [ "$d" = "approve" ]; then
+    ok "round trip: a task sentinel does not satisfy a plan loop (mode pin holds)"
+  else
+    fail "round trip: mode pin is broken — task sentinel resumed a plan loop (decision=$d)"
+  fi
+
+  rm -rf "$t"
+fi
+
 echo ""
 echo "== sentinel contract: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

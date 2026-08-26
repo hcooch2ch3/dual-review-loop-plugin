@@ -18,24 +18,34 @@
 #   gate11n1-none-bullet    now: STOPS on a '- 없음' placeholder — the
 #                           false positive measured at 77% of briefs
 #                           after a fix: decision=block (advances)
-#   gate11n2-h3-heading     now: ADVANCES past a real question under a
-#                           '###' heading (regex demands exactly '## ')
-#                           after a fix: approve, state deleted/paused
-#   gate11n3-star-bullet    now: ADVANCES past a real question on a '*'
-#                           bullet, though '*' is a list marker elsewhere
-#                           in the same file. after a fix: stops
+#   gate11n2-h3-heading     now: decision=block — ADVANCES past a real
+#                           question under a '###' heading (the regex demands
+#                           exactly '## ').
+#                           after a fix: identical to gate11-open-questions,
+#                           i.e. approve / state=N / non-empty systemMessage.
+#   gate11n3-star-bullet    now: decision=block — ADVANCES past a real
+#                           question on a '*' bullet, though '*' IS a list
+#                           marker elsewhere in the same file.
+#                           after a fix: same as gate11n2 above.
 #   gate01-bad-json         now: state=N — a merely CORRUPT file (killed
 #                           editor save, disk-full) is deleted, discarding
 #                           a recoverable iteration count and baseline SHA
-#   gate04 / gate05         also: systemMessage is EMPTY, so the user sees
-#                           a turn end with no explanation. These are the
-#                           two most frequent events in the field baseline
-#                           (214 fires / 58%).
 #   gate03-inactive         now: fine. Becomes a defect if a pause ever
 #                           sets active=false — this row is then the
 #                           silent-deletion path on the next fire.
 #   gate10b-max-minutes     now: state=N — the wall-clock cap deletes
 #                           state rather than pausing it
+#   gate10-max-iterations   now: state=N — same class as gate10b. If a fix
+#                           converts cap-termination to a pause, expect TWO
+#                           diffs here, not one.
+#   gate06-idle-timeout     now: state=N and an EMPTY systemMessage — 24h of
+#                           idleness deletes the loop silently. This is the
+#                           exact hazard midflight M5 guards against, frozen
+#                           here as if acceptable.
+#   gate08-plan-relative    now: state=N — a recoverable CONFIGURATION error
+#                           destroys state, same class as gate01. (A plan
+#                           path that is absolute but missing takes the same
+#                           fail_open branch and has no row at all.)
 #   gate09b-dirty-blocks    now: completion unreachable because an untracked
 #                           state file / brief keeps the tree dirty
 #                           after a fix: gitignore guidance covers .claude/
@@ -43,20 +53,37 @@
 #                           though the real repo tree is DIRTY — Gate 9 checks
 #                           dirname(plan_path), not the repo root
 #                           after a fix: SOFT-PAUSE, state=Y active=true
-#   gate04 / gate05         now: active=true after a takeover pause, so the
-#                           state stays armed and can be resurrected later
-#                           after a fix: active=false on takeover pauses only
+#   gate04-session-mismatch now: active=true after a CROSS-SESSION pause and
+#                           an EMPTY systemMessage, so the state stays armed
+#                           and the user sees a turn end with no explanation.
+#                           This is the field baseline's single most frequent
+#                           event (214 fires / 58%).
+#                           after a fix: active=false, non-empty message.
+#   gate05-no-continuation  now: same shape as gate04, but this is a
+#                           SAME-session pause — the user may well intend to
+#                           resume. Do NOT fold it in with gate04: disarming
+#                           it would kill a loop its owner still wants.
+#                           after a fix: message only; active stays true.
 #   gate12-lock-held        now: lock=N — this invocation FAILED to acquire
 #                           the lock and then deleted the holder's lock,
 #                           destroying mutual exclusion
 #                           after a fix: lock=Y (a non-owner must not rmdir)
+#                           NOTE, measured: simply deleting the rmdir from
+#                           soft_pause() flips SIX rows — gate02, gate04,
+#                           gate05, gate05b, gate09b, gate12 — because five
+#                           of them legitimately acquired the lock and would
+#                           then leak it. The correct owner-tracking fix
+#                           flips exactly ONE: gate12. Six diffs here means
+#                           the naive fix was taken, not a broken baseline.
 #
 # Do not read this file as a specification. A diff here is a question
 # ("did I mean to change this?"), not automatically a failure. Regenerating
 # with --update is how you ACCEPT a delta — walk the rows above first.
 #
-# Columns: label | decision | state/active/marker(value)/lock/iteration |
-#          systemMessage | log tail
+# Columns (6, pipe-separated):
+#   1 label  2 decision  3 state/active/marker(value)/lock/iter
+#   4 reason fingerprint (sentinel line + enforcement-clause count)
+#   5 systemMessage  6 log tail
 # Regenerate: bash tests/gate-matrix.test.sh --update
 advance-inject             | block   | state=Y active=true  marker=Y(2) lock=N iter=2/2 | sentinel="[dual-review-loop iter 2/20]" enforce=1 | dual-review-loop plan iter 2/20 | iter 2 → injecting (brief target: <TMP>/.claude/reviews/iter-002.md)
 gate00-no-state            | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | 
@@ -65,6 +92,8 @@ gate02-schema-unknown      | approve | state=Y active=true  marker=N(-) lock=N i
 gate03-inactive            | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | state.active != true
 gate04-session-mismatch    | approve | state=Y active=true  marker=N(-) lock=N iter=1/0 | - |  | SOFT-PAUSE: different session (test-session != other-session) (state preserved)
 gate05-no-continuation     | approve | state=Y active=true  marker=N(-) lock=N iter=1/1 | - |  | SOFT-PAUSE: no continuation signal (last_injected_iter=1, gap=<N>s) — user likely took control (state preserved)
+gate05a-grace-inside       | block   | state=Y active=true  marker=Y(2) lock=N iter=2/2 | sentinel="[dual-review-loop iter 2/20]" enforce=1 | dual-review-loop plan iter 2/20 | iter 2 → injecting (brief target: <TMP>/.claude/reviews/iter-002.md)
+gate05b-grace-outside      | approve | state=Y active=true  marker=N(-) lock=N iter=1/1 | - |  | SOFT-PAUSE: no continuation signal (last_injected_iter=1, gap=<N>s) — user likely took control (state preserved)
 gate06-idle-timeout        | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | idle timeout (>86400s)
 gate07-inflight-nocommit   | approve | state=Y active=true  marker=Y(1) lock=N iter=1/0 | - | dual-review-loop: iter 1 has not committed yet (plan mode can block commits, or it stopped early). It auto-resumes the moment a commit lands — exit plan mode and let it finish. If this iteration legitimately produced no commit, run /dual-review-loop:cancel-loop (or rm .claude/dual-review-loop.inflight). | in-flight marker present (iter=1) — no commit detected; not advancing (base_sha=<SHA>)
 gate08-plan-relative       | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | FAIL-OPEN: plan_path not absolute: relative/plan.md
