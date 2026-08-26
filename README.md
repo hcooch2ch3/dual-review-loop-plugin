@@ -60,7 +60,19 @@ Cancel either mode:
 /dual-review-loop:cancel-loop
 ```
 
-Defaults: `--max-iters 20`, `--max-minutes 30`. Both hook-enforced (Gates 10, 10b). `--max-minutes 0` disables wall-clock cap (24h idle gate still applies). Task mode also enforces cumulative caps: `--max-files 30`, `--max-loc 1500`, `--max-reviews 15` (Gates 10c–f). Plan mode defaults these to "Infinity" so they don't fire unless explicitly lowered.
+Defaults: `--max-iters 20`, `--max-minutes 0`. Both hook-enforced (Gates 10, 10b).
+
+**`--max-iters` is the cap that binds.** The wall-clock cap ships disabled: at a
+measured 9–14 min per iteration, 20 iterations need 3–5 hours, and Gate 10b counts
+elapsed time since loop start — including every minute the loop sits paused waiting
+for you — then DELETES loop state when it fires. Any finite default small enough to
+be useful was small enough to kill a healthy loop. Pass `--max-minutes M` explicitly
+if you want a hard wall-clock stop. Abandoned loops are still collected by the 24h
+idle gate (Gate 6), which measures idleness rather than elapsed time.
+
+Task mode also enforces cumulative caps: `--max-files 30`, `--max-loc 1500`,
+`--max-reviews 15` (Gates 10c–e). Plan mode defaults these to "Infinity" so they
+don't fire unless explicitly lowered.
 
 Cancel manually: `rm .claude/dual-review-loop.state.json` in project root.
 
@@ -96,11 +108,39 @@ The hook `soft_pause`s (state preserved, no inject) in several scenarios. The Cl
 - **"state schema `<x>` unknown"** — see the downgrade note above. Install a hook that supports the schema, or cancel.
 - **Manual deletion of `.claude/reviews/iter-*.md` mid-run** — the `max_reviews` gate uses a hook-tracked baseline. Deleting briefs causes a "reviews_baseline re-init" log entry on the next fire (baseline drops to the new count); the cap stays meaningful. No user action needed, just be aware that manually rm'd briefs reset the budget window.
 - **"iter `<N>` has not committed yet" / "completion can't be auto-detected"** — the previous iteration's in-flight marker is still present and no commit has landed since it was injected. If a commit *did* land but the loop didn't advance, the baseline SHA was probably missing (legacy/non-git state) — `rm .claude/dual-review-loop.inflight` to resume. Otherwise exit plan mode and let the iteration commit (it auto-resumes), or `/dual-review-loop:cancel-loop`.
-- **Lock contention / different session / no-continuation signal** — these silent pauses are expected (concurrent hook fires auto-recover; second-session resume is intentional; user takeover stops the loop). If a loop seems stuck without a `systemMessage`, check `.claude/dual-review-loop.log` for the last `SOFT-PAUSE:` line.
+- **"another hook instance holds the lock"** — two hook fires overlapped and this one
+  stood down. Normally self-correcting. If it repeats with no other loop running, the
+  lock is stale (an instance was killed before it could release):
+  `rmdir .claude/dual-review-loop.lock`. The hook will not remove a lock it did not
+  acquire, because a non-owner deleting one destroys mutual exclusion.
+- **"every task in the plan is complete, but the working tree still has uncommitted
+  changes"** — Gate 9 refuses to declare completion over a dirty tree, since the last
+  iteration's commit may not have landed. Commit or stash, and the loop finishes on the
+  next turn. If the dirt is plugin artifacts, add the three ignore patterns (see Use).
+- **Different session / no-continuation signal** — these pauses are expected and stay
+  silent (second-session resume is intentional; user takeover stops the loop). If a loop
+  seems stuck without a `systemMessage`, check `.claude/dual-review-loop.log` for the
+  last `SOFT-PAUSE:` line.
+
+## Stop-hook block budget
+
+Claude Code caps how many times a Stop hook may block **per user turn** —
+`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, default **8**. The 9th block in the same turn is
+overridden and the turn ends.
+
+Measured on CLI 2.1.221 (headless `claude -p`, single registered Stop hook), the cap
+**resets every user turn** — it is not a lifetime ceiling, so `--max-iters 20` is
+reachable. It resets because **every `approve` ends the turn**: an approve is what the
+hook emits on completion, on every `soft_pause`, and on every fail-open. So "8
+consecutive blocks" and "8 blocks per turn" are the same quantity, and any pause is
+already a turn boundary.
+
+Practical consequence: a loop that runs more than 8 uninterrupted iterations needs one
+user turn boundary along the way. Pauses supply them naturally.
 
 ## Architecture (quick reference)
 
-- `hooks/stop-hook.sh` — gates the loop on Claude Code stop event. Fail-open invariant. Schema v1 (plan-only legacy) and v2 (mode + cumulative gates) both accepted.
+- `hooks/stop-hook.sh` — gates the loop on Claude Code stop event. Fail-open invariant. Schema v1 (plan-only legacy) and v2 (mode + cumulative gates) both accepted. Run `shellcheck hooks/stop-hook.sh` and `bash tests/run-all.sh` before changing it.
 - `commands/dual-review-loop.md` — `/dual-review-loop:dual-review-loop <plan>` (plan mode)
 - `commands/dual-review-task.md` — `/dual-review-loop:dual-review-task "<task>"` (task mode)
 - `commands/cancel-loop.md` — `/dual-review-loop:cancel-loop` (mode-agnostic)

@@ -22,7 +22,11 @@ Required: `<plan-path>` — absolute path to a markdown file with `- [ ]` checkb
 
 Optional budget flags (both enforced by the stop hook):
 - `--max-iters N` (default: 20) — hard cap on iterations
-- `--max-minutes M` (default: 30) — wall-clock cap since loop start; hook stops when `(now - started_at) ≥ M`
+- `--max-minutes M` (default: 0 = disabled) — optional wall-clock cap since loop
+  start; hook stops when `(now - started_at) ≥ M`. Off by default because it
+  measures elapsed time, not work done: the clock keeps running while the loop
+  is paused waiting for you, and firing it DELETES loop state rather than
+  pausing. `--max-iters` is the cap that binds.
 
 If user passes unrecognized flags, surface them in the start brief (Section 4) as `Unrecognized flags ignored: <list>` and continue. For other SKILL inputs (`max_reviews`, `max_files`, `max_loc`, `apply_threshold`, etc.) see the dual-review-loop SKILL inputs table; not exposed as flags by default (and not hook-enforced).
 
@@ -61,7 +65,8 @@ If `<plan-path>` is relative or not provided: prompt user once via AskUserQuesti
 
 Schema v2 (was v1) adds `mode` (`"plan"` here, `"task"` for `/dual-review-loop:dual-review-task`), cumulative gate fields (`max_*`), and `started_at_sha` (used by the hook as a git diff baseline to compute changed-files/LOC counters automatically — no LLM trust). Defaults above (999999) keep plan-mode behaviour identical to v1; the cumulative caps only fire if a caller explicitly lowers them.
 
-`max_iterations` and `max_minutes` are enforced by the stop hook (Gates 10/10b). Cumulative caps (Gates 10c–e) are enforced by the hook computing `git diff --shortstat <started_at_sha> HEAD` and counting `.claude/reviews/iter-*.md` files — these gates are hook-owned, not command-owned. The hook also enforces a hard 24h idle timeout.
+`max_iterations` and `max_minutes` are enforced by the stop hook (Gates 10/10b).
+`max_iterations` is the binding cap; `max_minutes` defaults to 0 (disabled). Cumulative caps (Gates 10c–e) are enforced by the hook computing `git diff --shortstat <started_at_sha> HEAD` and counting `.claude/reviews/iter-*.md` files — these gates are hook-owned, not command-owned. The hook also enforces a hard 24h idle timeout.
 
 Path: `<cwd>/.claude/dual-review-loop.state.json` (create `.claude/` dir if missing).
 Write via temp + mv for atomicity.

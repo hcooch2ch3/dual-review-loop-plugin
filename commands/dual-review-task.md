@@ -28,7 +28,9 @@ the re-injected prompt and crowding out context for actual work.
 
 Optional budget flags (all enforced by the stop hook):
 - `--max-iters N` (default: 20) — hard cap on iterations
-- `--max-minutes M` (default: 30) — wall-clock cap since loop start
+- `--max-minutes M` (default: 0 = disabled) — optional wall-clock cap since loop
+  start. Off by default: it measures elapsed time including time spent paused,
+  and firing it deletes loop state. `--max-iters` is the cap that binds.
 - `--max-files N` (default: 30) — cumulative changed files cap
 - `--max-loc N` (default: 1500) — cumulative changed LOC cap
 - `--max-reviews N` (default: 15) — cumulative dual-review invocations cap

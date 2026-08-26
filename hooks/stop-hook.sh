@@ -24,7 +24,7 @@
 #   8   plan_path missing/relative
 #   9   plan has no unfinished tasks (AND no uncommitted changes)
 #   10  max_iterations reached
-#   10b max_minutes reached (wall-clock cap)
+#   10b max_minutes reached (wall-clock cap; default 0 = disabled)
 #   11  Open Questions in previous brief
 #   12  lock not acquired (another hook instance running)
 #
@@ -147,7 +147,11 @@ ACTIVE=$(jq -r '.active // false' "$STATE_FILE")
 PLAN_PATH=$(jq -r '.plan_path // ""' "$STATE_FILE")
 ITERATION=$(jq -r '.iteration // 0' "$STATE_FILE")
 MAX_ITERATIONS=$(jq -r '.max_iterations // 20' "$STATE_FILE")
-MAX_MINUTES=$(jq -r '.max_minutes // 30' "$STATE_FILE")
+# Fallback 0 = disabled. max_iterations is the binding cap; a wall-clock
+# cap that fits 20 iterations does not exist, because Gate 10b measures
+# elapsed time since started_at_epoch — including every minute the loop
+# sits paused waiting for the user — and deletes state when it fires.
+MAX_MINUTES=$(jq -r '.max_minutes // 0' "$STATE_FILE")
 SESSION_ID_STATE=$(jq -r '.session_id // ""' "$STATE_FILE")
 STARTED_AT=$(jq -r '.started_at_epoch // 0' "$STATE_FILE")
 LAST_ITER_AT=$(jq -r '.last_iter_at_epoch // 0' "$STATE_FILE")
