@@ -16,3 +16,6 @@
 
 # OMC plugin runtime artifacts
 .omc/
+
+# Internal working handoff — kept local, not published
+HANDOFF.md
