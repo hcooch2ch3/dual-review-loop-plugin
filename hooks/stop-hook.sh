@@ -49,6 +49,15 @@ LOCK_DIR="$REPO_ROOT/.claude/dual-review-loop.lock"
 # `rmdir`, so an instance that LOST the race deleted the winner's lock and
 # mutual exclusion collapsed (dual review: defect G).
 LOCK_HELD=0
+# A lock is only ever held for the lifetime of ONE hook invocation — seconds,
+# bounded by the CLI's hook timeout. So a lock dir older than this cannot have a
+# live holder and is safe to reclaim. This is NOT the pid-liveness check the plan
+# rejected for state GC: that risked deleting a loop that lives for hours, whereas
+# a lock outliving its own process by 10 minutes is definitionally dead.
+LOCK_STALE_MINUTES=10
+# Set to 1 by every path that prints a decision. The EXIT trap emits a fail-open
+# approve when it is still 0, so no future crash can end the turn silently.
+DECISION_EMITTED=0
 INFLIGHT_FILE="$REPO_ROOT/.claude/dual-review-loop.inflight"
 REVIEWS_DIR="$REPO_ROOT/.claude/reviews"
 IDLE_TIMEOUT_SECONDS=$((24 * 3600))
@@ -64,9 +73,11 @@ PHANTOM_GRACE_SECONDS=600   # if hook fires within 10min of last inject, assume 
 # upgraded ahead of the command (codex dual review high #2 — atomic migration).
 SCHEMA_VERSIONS_OK="v1 v2"
 
-# Release the lock only if this invocation acquired it. Never returns
-# non-zero: the ERR trap fires on any failing simple command even though only
-# `set -u` is active, so a helper on the exit path must not re-enter it.
+# Release the lock only if this invocation acquired it. Returns 0 unconditionally
+# so a caller on an exit path never sees a failure from cleanup. (An earlier
+# comment justified this by claiming a non-zero return would re-enter the ERR
+# trap. That was wrong: ERR is not inherited by functions without `set -E`, which
+# this hook does not set. Verified. The explicit return is kept regardless.)
 release_lock() {
   if [ "$LOCK_HELD" = "1" ]; then
     rmdir "$LOCK_DIR" 2>/dev/null || true
@@ -81,6 +92,7 @@ log() {
 }
 
 approve() {
+  DECISION_EMITTED=1
   printf '{"decision":"approve"}\n'
   # release lock if we hold it
   release_lock
@@ -88,11 +100,21 @@ approve() {
 }
 
 # Cleanup state + approve (terminal: loop ends here)
+# Terminal: delete state + approve. Optional 2nd arg = user-facing systemMessage.
+# Deletion is the one outcome the user cannot undo and cannot see: an approve with
+# no message ends the turn indistinguishably from success and from a hang. Paths
+# that end a loop the user did not ask to end MUST pass a message.
 cleanup_and_approve() {
   log "$1"
+  DECISION_EMITTED=1
   rm -f "$STATE_FILE" "$INFLIGHT_FILE" 2>/dev/null
   release_lock
-  printf '{"decision":"approve"}\n'
+  if [ "$#" -ge 2 ] && [ -n "$2" ]; then
+    jq -n --arg m "$2" '{"decision":"approve","systemMessage":$m}' 2>/dev/null \
+      || printf '{"decision":"approve"}\n'
+  else
+    printf '{"decision":"approve"}\n'
+  fi
   exit 0
 }
 
@@ -102,6 +124,7 @@ cleanup_and_approve() {
 # users can't tell why their loop stopped advancing).
 soft_pause() {
   log "SOFT-PAUSE: $1 (state preserved)"
+  DECISION_EMITTED=1
   release_lock
   if [ "$#" -ge 2 ] && [ -n "$2" ]; then
     jq -n --arg m "$2" '{"decision":"approve","systemMessage":$m}' 2>/dev/null \
@@ -129,8 +152,17 @@ soft_pause() {
 # existed, so a legacy state is never protected by a field it does not have.
 idle_dead() {  # idle_dead <now> <last_activity> <marker_path> <last_injected_at>
   [ "$(( $1 - $2 ))" -gt "$IDLE_TIMEOUT_SECONDS" ] || return 1
-  if [ -f "$3" ] && [ "$4" -gt 0 ] && [ "$(( $1 - $4 ))" -lt "$MARKER_LEASE_SECONDS" ]; then
-    return 1
+  if [ -f "$3" ] && [ "$4" -gt 0 ]; then
+    marker_age=$(( $1 - $4 ))
+    # Bounded on BOTH sides. A negative age — a marker timestamped in the future,
+    # from clock skew, a bad RTC, or a state file copied between machines — is
+    # always less than the lease, so a one-sided test granted a PERMANENT
+    # exemption and recreated the immortal state this GC exists to prevent.
+    # A future timestamp carries no evidence of liveness, so it gets no exemption,
+    # matching the absent-field polarity.
+    if [ "$marker_age" -ge 0 ] && [ "$marker_age" -lt "$MARKER_LEASE_SECONDS" ]; then
+      return 1
+    fi
   fi
   return 0
 }
@@ -138,13 +170,23 @@ idle_dead() {  # idle_dead <now> <last_activity> <marker_path> <last_injected_at
 # Hard fail-open: error path, clean everything
 fail_open() {
   log "FAIL-OPEN: $1"
+  DECISION_EMITTED=1
   rm -f "$STATE_FILE" "$INFLIGHT_FILE" 2>/dev/null
   release_lock
   printf '{"decision":"approve"}\n'
   exit 0
 }
 
-trap 'log "ERR trap fired (line $LINENO)"; rm -f "$INFLIGHT_FILE" 2>/dev/null; release_lock; printf "{\"decision\":\"approve\"}\n"; exit 0' ERR
+trap 'log "ERR trap fired (line $LINENO)"; rm -f "$INFLIGHT_FILE" 2>/dev/null; release_lock; DECISION_EMITTED=1; printf "{\"decision\":\"approve\"}\n"; exit 0' ERR
+
+# Belt and braces for the lock. Every exit path calls release_lock explicitly,
+# but a hook killed mid-run (CLI hook timeout, Ctrl-C on the turn) takes none of
+# them and leaves the dir behind. release_lock is idempotent, so firing it again
+# here costs nothing. SIGKILL still cannot be caught — that is what the stale
+# reclaim at Gate 12 is for.
+trap 'if [ "$DECISION_EMITTED" -ne 1 ]; then log "FAIL-OPEN: exited without emitting a decision"; printf "{\"decision\":\"approve\"}\n"; fi; release_lock' EXIT
+trap 'release_lock; exit 130' INT
+trap 'release_lock; exit 143' TERM
 
 HOOK_INPUT=$(cat 2>/dev/null || echo "")
 
@@ -156,17 +198,28 @@ command -v jq >/dev/null 2>&1 || fail_open "jq not on PATH"
 
 # Gate 12 (early): acquire lock via mkdir (atomic)
 mkdir -p "$(dirname "$LOCK_DIR")" 2>/dev/null
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-  log "lock held by another hook instance; soft-pause"
-  # Recovery hint. Until ownership tracking landed, this path's unconditional
-  # rmdir doubled as the only stale-lock cleanup: a hard-killed instance left
-  # the dir behind and the next loser cleared it. A non-owner must not delete
-  # the lock, so an orphan is now permanent and the user has to clear it —
-  # say so rather than pausing silently forever.
-  soft_pause "lock contention" \
-    "dual-review-loop: another hook instance holds the lock, so this turn did not advance. If no other loop is running, the lock is stale — remove it with: rmdir .claude/dual-review-loop.lock"
+if mkdir "$LOCK_DIR" 2>/dev/null; then
+  LOCK_HELD=1
+else
+  # Reclaim an orphan before giving up. Until ownership tracking landed, the
+  # loser of the race deleted the winner's lock unconditionally — which broke
+  # mutual exclusion, but incidentally cleared any lock left behind by a killed
+  # instance. Removing that was right, and it removed the only cleanup with it:
+  # an orphaned lock became PERMANENT. This gate precedes every other gate,
+  # including the idle GC, so a single orphan wedged the loop forever and the
+  # state could never be collected. Found by adversarial review, reproduced
+  # against a control.
+  if [ -n "$(find "$LOCK_DIR" -maxdepth 0 -mmin +"$LOCK_STALE_MINUTES" 2>/dev/null)" ]; then
+    log "lock dir older than ${LOCK_STALE_MINUTES}min — no live holder is possible; reclaiming"
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+    mkdir "$LOCK_DIR" 2>/dev/null && LOCK_HELD=1
+  fi
 fi
-LOCK_HELD=1
+if [ "$LOCK_HELD" -ne 1 ]; then
+  log "lock held by another hook instance; soft-pause"
+  soft_pause "lock contention" \
+    "dual-review-loop: another hook instance holds the lock, so this turn did not advance. A lock with no live holder is reclaimed automatically after ${LOCK_STALE_MINUTES} minutes. To clear it now: rmdir $LOCK_DIR"
+fi
 
 # Gate 1: JSON parses?
 if ! jq -e . "$STATE_FILE" >/dev/null 2>&1; then
@@ -176,27 +229,40 @@ fi
 SCHEMA=$(jq -r '.schema // ""' "$STATE_FILE")
 ACTIVE=$(jq -r '.active // false' "$STATE_FILE")
 PLAN_PATH=$(jq -r '.plan_path // ""' "$STATE_FILE")
-ITERATION=$(jq -r '.iteration // 0' "$STATE_FILE")
-MAX_ITERATIONS=$(jq -r '.max_iterations // 20' "$STATE_FILE")
-# Fallback 0 = disabled. max_iterations is the binding cap; a wall-clock
+# Every numeric field below is coerced at the jq boundary. `//` only substitutes
+# for null/false, so a string, bool or float written by a hand-edit or an external
+# tool passed through verbatim and detonated later in bash arithmetic: under
+# `set -u` an identifier-shaped value like "unknown" is an unbound-variable abort
+# that killed the shell before ANY decision was emitted — a fail-open violation on
+# a hook that runs on every Stop event. `floor` also flattens float epochs, which
+# otherwise printed raw bash diagnostics and silently read as not-idle.
+ITERATION=$(jq -r 'if (.iteration|type)=="number" then (.iteration|floor) else 0 end' "$STATE_FILE")
+MAX_ITERATIONS=$(jq -r 'if (.max_iterations|type)=="number" then (.max_iterations|floor) else 20 end' "$STATE_FILE")
+# Fallback 0 = disabled. NOTE this is a fallback, not a migration: a loop already
+# in flight carries an explicit wall-clock cap in its state file, written by the
+# command at start, and keeps whatever value it was given — so the old
+# unreachable cap persists for those runs until they end or are cancelled.
+# Lowering a fallback is forbidden by the mid-flight rule; raising one, as here,
+# is safe but reaches only states that omit the field.
+# max_iterations is the binding cap; a wall-clock
 # cap that fits 20 iterations does not exist, because Gate 10b measures
 # elapsed time since started_at_epoch — including every minute the loop
 # sits paused waiting for the user — and deletes state when it fires.
-MAX_MINUTES=$(jq -r '.max_minutes // 0' "$STATE_FILE")
+MAX_MINUTES=$(jq -r 'if (.max_minutes|type)=="number" then (.max_minutes|floor) else 0 end' "$STATE_FILE")
 SESSION_ID_STATE=$(jq -r '.session_id // ""' "$STATE_FILE")
-STARTED_AT=$(jq -r '.started_at_epoch // 0' "$STATE_FILE")
-LAST_ITER_AT=$(jq -r '.last_iter_at_epoch // 0' "$STATE_FILE")
-LAST_INJECTED_AT=$(jq -r '.last_injected_at_epoch // 0' "$STATE_FILE")
-LAST_INJECTED_ITER=$(jq -r '.last_injected_iter // 0' "$STATE_FILE")
+STARTED_AT=$(jq -r 'if (.started_at_epoch|type)=="number" then (.started_at_epoch|floor) else 0 end' "$STATE_FILE")
+LAST_ITER_AT=$(jq -r 'if (.last_iter_at_epoch|type)=="number" then (.last_iter_at_epoch|floor) else 0 end' "$STATE_FILE")
+LAST_INJECTED_AT=$(jq -r 'if (.last_injected_at_epoch|type)=="number" then (.last_injected_at_epoch|floor) else 0 end' "$STATE_FILE")
+LAST_INJECTED_ITER=$(jq -r 'if (.last_injected_iter|type)=="number" then (.last_injected_iter|floor) else 0 end' "$STATE_FILE")
 LAST_BRIEF_PATH=$(jq -r '.last_brief_path // ""' "$STATE_FILE")
 
 # v2 fields (default to "plan mode + Infinity gates" so v1 state is byte-equivalent).
 # Cumulative cap fields are hook-OWNED — computed from git diff + filesystem,
 # not trusted from prompt-driven state updates (dual review #8 high #1).
 MODE=$(jq -r '.mode // "plan"' "$STATE_FILE")
-MAX_FILES=$(jq -r '.max_files // 999999' "$STATE_FILE")
-MAX_LOC=$(jq -r '.max_loc // 999999' "$STATE_FILE")
-MAX_REVIEWS=$(jq -r '.max_reviews // 999999' "$STATE_FILE")
+MAX_FILES=$(jq -r 'if (.max_files|type)=="number" then (.max_files|floor) else 999999 end' "$STATE_FILE")
+MAX_LOC=$(jq -r 'if (.max_loc|type)=="number" then (.max_loc|floor) else 999999 end' "$STATE_FILE")
+MAX_REVIEWS=$(jq -r 'if (.max_reviews|type)=="number" then (.max_reviews|floor) else 999999 end' "$STATE_FILE")
 STARTED_AT_SHA=$(jq -r '.started_at_sha // ""' "$STATE_FILE")
 # HEAD recorded when the current in-flight iter was injected (hook-owned).
 # Gate 7 uses it as ground truth for "did this iter's commit land?" so marker
@@ -225,8 +291,13 @@ esac
 # exits before reaching it — Gate 4 soft-pauses on a session mismatch, Gate 5 on
 # a missing continuation signal — so a state owned by a session that no longer
 # exists could never be collected. It was preserved, re-examined on the next
-# fire, paused again, forever. That single path is 214 fires / 58% of the field
-# baseline. Collecting first is what ends it.
+# fire, paused again, forever. That path is 214 fires / 58% of the field baseline.
+#
+# Scope the claim honestly: this collects the subset of that path which is ALSO
+# past the idle timeout. A cross-session state younger than 24h still soft-pauses
+# at Gate 4 exactly as before. What fraction of the 214 is old enough to collect
+# has NOT been measured — bucketing those fires by state age is the check that
+# would settle it, and it has not been run.
 #
 # It must stay AFTER Gate 2. Gate 2 is the schema check, and collecting an
 # unknown schema would delete state the hook does not understand — see idle_dead.
@@ -235,7 +306,8 @@ esac
 LAST_ACT=$LAST_ITER_AT
 [ "$LAST_ACT" -eq 0 ] && LAST_ACT=$STARTED_AT
 if idle_dead "$NOW_EPOCH" "$LAST_ACT" "$INFLIGHT_FILE" "$LAST_INJECTED_AT"; then
-  cleanup_and_approve "idle timeout (>${IDLE_TIMEOUT_SECONDS}s)"
+  cleanup_and_approve "idle timeout (>${IDLE_TIMEOUT_SECONDS}s)" \
+    "dual-review-loop: this loop had no activity for over $((IDLE_TIMEOUT_SECONDS / 3600))h, so its state was collected and the loop has ended. Nothing you committed was touched — only the plugin's own state file and marker. To pick the work back up, start a new loop on the same plan."
 fi
 
 # Gate 4: cross-session phantom defense
@@ -336,6 +408,7 @@ if [ -f "$INFLIGHT_FILE" ]; then
     log "in-flight marker present (iter=$INFLIGHT_ITER) — no commit detected; not advancing (base_sha=${INFLIGHT_BASE_SHA:-<none>})"
     # Keep state + marker so the next fire / a debugger can still see it.
     release_lock
+    DECISION_EMITTED=1
     jq -n --arg m "$PAUSE_MSG" '{"decision":"approve","systemMessage":$m}' 2>/dev/null \
       || printf '{"decision":"approve","systemMessage":"dual-review-loop: previous iter still in-flight; not advancing"}\n'
     exit 0
@@ -449,7 +522,7 @@ fi
 # Review-count gate: count files written **after** loop start so prior runs'
 # briefs don't pre-exhaust max_reviews. Hook records reviews_baseline on its
 # first fire (when iteration was still 0); subsequent fires use that.
-REVIEWS_BASELINE=$(jq -r '.reviews_baseline // -1' "$STATE_FILE")
+REVIEWS_BASELINE=$(jq -r 'if (.reviews_baseline|type)=="number" then (.reviews_baseline|floor) else -1 end' "$STATE_FILE")
 CUR_REVIEWS_COUNT=$(ls "$REVIEWS_DIR"/iter-*.md 2>/dev/null | wc -l | tr -d ' ')
 CUR_REVIEWS_COUNT=${CUR_REVIEWS_COUNT:-0}
 if [ "$REVIEWS_BASELINE" = "-1" ]; then
@@ -642,6 +715,7 @@ To cancel: rm .claude/dual-review-loop.state.json (or run /dual-review-loop:canc
     ;;
 esac
 
+DECISION_EMITTED=1
 jq -n --arg r "$REASON" --arg s "$SYSTEM_MSG" \
   '{"decision":"block","reason":$r,"systemMessage":$s}' 2>/dev/null || \
   fail_open "final JSON emit failed"

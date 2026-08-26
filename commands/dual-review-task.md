@@ -204,7 +204,10 @@ The stop hook (`hooks/stop-hook.sh`) gates:
 - changed LOC (+insertions + deletions) since `started_at_sha` ≥ `max_loc` → Gate 10d (same source)
 - count of `.claude/reviews/iter-*.md` ≥ `max_reviews` → Gate 10e (hook-counted on filesystem)
 - Open Questions in last brief → Gate 11
-- Idle > 24h → Gate 6
+- Idle > 24h → Gate 6 (48h instead when an in-flight marker is present — the
+  marker defers collection by a bounded lease, it does not cancel it). Despite the
+  number, this gate runs early — right after Gate 3, ahead of the session and
+  continuation checks — so a dead loop is collected rather than pausing forever.
 - User runs `/dual-review-loop:cancel-loop` or removes state file.
 
 There is no `consecutive_same_failure` gate — the verify-fingerprint

@@ -3,6 +3,7 @@
 .claude/dual-review-loop.inflight
 .claude/dual-review-loop.lock
 .claude/dual-review-loop.log
+.claude/dual-review-loop/
 .claude/reviews/
 
 # Editors / OS

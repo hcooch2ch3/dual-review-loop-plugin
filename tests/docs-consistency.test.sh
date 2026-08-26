@@ -58,7 +58,10 @@ echo "== docs/constant consistency =="
 #    that was arithmetically impossible (30 min vs 20 iterations x 9-14 min)
 #    and the reason the cap now ships disabled.
 # ---------------------------------------------------------------------------
-HOOK_MAX_MIN=$(LC_ALL=C sed -n "s/^MAX_MINUTES=.*max_minutes \/\/ \([0-9][0-9]*\).*/\1/p" "$HOOK" | head -1)
+# Anchored on the jq `else <default> end` branch. The reads were coerced to
+# integers at the jq boundary, which retired the old `// <default>` spelling —
+# this assertion caught that drift when it happened, which is the point of it.
+HOOK_MAX_MIN=$(LC_ALL=C sed -n "s/^MAX_MINUTES=.*else \([0-9][0-9]*\) end.*/\1/p" "$HOOK" | head -1)
 if [ -n "$HOOK_MAX_MIN" ]; then
   ok "hook exposes a max_minutes fallback (found: $HOOK_MAX_MIN)"
 else
@@ -98,13 +101,46 @@ fi
 has "README/commands: plan command states the 24h idle timeout" "$CMD_PLAN" "24h idle timeout"
 has "task command states the 24h idle gate" "$CMD_TASK" "Idle > 24h"
 
+# The in-flight marker lease EXTENDS the idle timeout, so a doc that names only
+# the 24h figure is incomplete: a user watching a loop still alive at 40h has
+# nothing that explains it. Derive the hours from the hook so the two cannot drift.
+LEASE_H=$(LC_ALL=C sed -n "s/^MARKER_LEASE_SECONDS=\$((\([0-9][0-9]*\) \* 3600)).*/\1/p" "$HOOK" | head -1)
+if [ -n "$LEASE_H" ]; then
+  ok "hook exposes a marker lease (found: ${LEASE_H}h)"
+else
+  fail "could not read MARKER_LEASE_SECONDS out of the hook — anchor changed"
+fi
+IDLE_H=24
+if [ -n "$LEASE_H" ] && [ "$LEASE_H" -gt "$IDLE_H" ]; then
+  ok "marker lease (${LEASE_H}h) exceeds the idle timeout (${IDLE_H}h), so the exemption can apply"
+else
+  fail "marker lease ${LEASE_H}h does not exceed the ${IDLE_H}h idle timeout — the exemption would be unreachable dead code"
+fi
+# Anchored to the claim, not to the file. A bare "48h" grep passed when the lease
+# sentence was deleted outright and an unrelated line mentioning 48h was added —
+# measured. Require the figure to appear in the SAME paragraph as the thing it
+# describes. awk RS='' is paragraph mode, which is also how the gitignore block
+# below is scoped; grep cannot do this because these docs wrap mid-sentence.
+for site in "$README:README" "$CMD_PLAN:plan command" "$CMD_TASK:task command"; do
+  f=${site%:*}; label=${site##*:}
+  if LC_ALL=C awk -v RS='' -v L="${LEASE_H}h" \
+       'index($0,L) && (index($0,"marker") || index($0,"lease")) { found=1 } END { exit !found }' "$f"; then
+    ok "$label states the ${LEASE_H}h lease in the same paragraph as the marker it governs"
+  else
+    fail "$label does not tie ${LEASE_H}h to the in-flight marker — a bare figure elsewhere in the file does not document the lease"
+  fi
+done
+
 # ---------------------------------------------------------------------------
 # 3. Gate labels. The hook labels cumulative caps 10c-e. README used to cite a
 #    Gate 10f that has never existed.
 # ---------------------------------------------------------------------------
-# The typo shipped as "Gates 10c–f" — the f follows the dash, so a pattern
-# demanding a literal "10f" token misses it. Match the range form itself.
-absent_everywhere "no doc cites a nonexistent Gate 10f" "10c[^a-z0-9]+f([^a-z0-9]|$)|Gate 10f"
+# Two spellings have to be caught, and the first fix caught only one of them.
+# The typo shipped as "Gates 10c–f" (the f follows a dash, no "10" in front), but
+# "Gates 10f" and "Gates 10c-10f" are equally wrong and a pattern tailored to the
+# one observed spelling passes them. Measured: both escaped the previous version.
+# Covers the bare token AND any range whose upper bound is f.
+absent_everywhere "no doc cites a nonexistent Gate 10f" "10f|10[a-e][^a-z0-9]*f([^a-z0-9]|$)"
 has "hook labels the cumulative caps 10c-e" "$HOOK" "Gates 10c-e"
 
 # ---------------------------------------------------------------------------
@@ -116,27 +152,57 @@ has "hook labels the cumulative caps 10c-e" "$HOOK" "Gates 10c-e"
 #    so a repo that followed incomplete advice can never finish a plan.
 #    Every site that gives the advice must give all three.
 # ---------------------------------------------------------------------------
-#    Scope the search to the GUIDANCE itself — the lines around each mention of
-#    `.gitignore` — not the whole file. Every one of these files also mentions
-#    `.claude/reviews/iter-NNN.md` in unrelated prose, so a whole-file grep
-#    passes even when the advice omits the pattern. Verified: it did.
+#    Scope to the BULLET (or paragraph) giving the advice and require all three
+#    patterns inside that one block. Three weaker versions were measured and all
+#    three escaped: a whole-file grep matched `.claude/reviews/iter-NNN.md` in
+#    unrelated prose; a +/-4 line window was satisfied by an unrelated bullet
+#    three lines above; and paragraph mode failed because consecutive markdown
+#    bullets form a single paragraph, so an adjacent bullet still leaked its
+#    patterns in. Blocks here break on a blank line OR a new top-level bullet.
+#
+#    HONEST LIMIT: this is still a grep over prose. It pins that the advice names
+#    three patterns together; it cannot pin that the advice is true or that anyone
+#    followed it. The compliance check below is the one that is not a heuristic.
 for site in "$README:README" "$CMD_PLAN:plan command" "$CMD_TASK:task command" "$CMD_CANCEL:cancel command"; do
   f=${site%:*}; label=${site##*:}
-  window=$(LC_ALL=C grep -B4 -A4 -e '\.gitignore' "$f" 2>/dev/null || true)
-  if [ -z "$window" ]; then
+  if ! LC_ALL=C grep -q '\.gitignore' "$f"; then
     fail "$label gives no .gitignore guidance at all"
     continue
   fi
-  miss=""
-  printf '%s' "$window" | LC_ALL=C grep -q 'dual-review-loop\.\*' || miss="$miss .claude/dual-review-loop.*"
-  printf '%s' "$window" | LC_ALL=C grep -q 'dual-review-loop/'      || miss="$miss .claude/dual-review-loop/"
-  printf '%s' "$window" | LC_ALL=C grep -q '\.claude/reviews/'      || miss="$miss .claude/reviews/"
-  if [ -z "$miss" ]; then
-    ok "$label names all three ignore patterns where it gives the advice"
+  if LC_ALL=C awk '
+       /^[[:space:]]*[-*+] / || /^[[:space:]]*$/ { blk="" }
+       { blk = blk " " $0 }
+       blk ~ /\.gitignore/ &&
+       blk ~ /dual-review-loop\.\*/ &&
+       blk ~ /dual-review-loop\// &&
+       blk ~ /\.claude\/reviews\// { found=1 }
+       END { exit !found }' "$f"; then
+    ok "$label names all three ignore patterns in the block that gives the advice"
   else
-    fail "$label omits:$miss — an unignored artifact blocks Gate 9 completion"
+    fail "$label does not name all three ignore patterns together where it gives the advice — an unignored artifact blocks Gate 9 completion"
   fi
 done
+
+# COMPLIANCE, not advice. The four checks above police what the docs SAY; this one
+# checks the only file that changes behaviour. This repo runs the loop on itself,
+# so an artifact it forgets to ignore keeps its own tree dirty and makes Gate 9
+# completion — the project's stated acceptance criterion — unreachable here.
+# Found by adversarial review: the repo was missing its own task-log pattern while
+# all four documents correctly told users to add it.
+REPO_GI="$ROOT/.gitignore"
+if [ -f "$REPO_GI" ]; then
+  gimiss=""
+  LC_ALL=C grep -Eq 'dual-review-loop\.(\*|state|log|lock|inflight)' "$REPO_GI" || gimiss="$gimiss state/log/lock"
+  LC_ALL=C grep -Eq 'dual-review-loop/' "$REPO_GI"                                || gimiss="$gimiss .claude/dual-review-loop/"
+  LC_ALL=C grep -Eq '\.claude/reviews/' "$REPO_GI"                                || gimiss="$gimiss .claude/reviews/"
+  if [ -z "$gimiss" ]; then
+    ok "this repo's own .gitignore covers every artifact the loop writes"
+  else
+    fail "this repo's .gitignore omits:$gimiss — the loop would dirty its own tree and never reach 'all tasks complete' here"
+  fi
+else
+  fail "this repo has no .gitignore — the loop's own artifacts would block Gate 9 completion"
+fi
 
 # ---------------------------------------------------------------------------
 # 5. Open Questions STOP clause — FOUR enforcement points, not two.
@@ -183,8 +249,12 @@ has "README prints the stale-lock recovery command on one line" "$README" "rmdir
 # ---------------------------------------------------------------------------
 has "README documents the block cap and its env var" "$README" \
     "CLAUDE_CODE_STOP_HOOK_BLOCK_CAP"
-has "README states the cap is per turn, not per loop" "$README" \
-    "per user turn|per turn"
+if LC_ALL=C awk -v RS='' \
+     '/CLAUDE_CODE_STOP_HOOK_BLOCK_CAP/ && (/per user turn/ || /per turn/) { found=1 } END { exit !found }' "$README"; then
+  ok "README states the cap is per turn in the same paragraph as the cap itself"
+else
+  fail "README does not tie 'per turn' to the block cap — the phrase alone can come from anywhere in the file"
+fi
 
 echo ""
 echo "== docs consistency: $PASS passed, $FAIL failed =="

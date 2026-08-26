@@ -55,11 +55,26 @@
 #                           pins the repaired behaviour: state=N, log = idle
 #                           timeout. Back to state=Y and the GC has fallen
 #                           behind the defensive gates again.
-#   gate06c-stale-marker-fresh-lease  FIXED (B-1) — pins state=Y. An
-#                           in-flight marker within its lease defers
-#                           collection and hands the state to Gate 7, which
-#                           can still recover it, instead of deleting a loop
-#                           that was recently mid-iteration.
+#   gate06c/06d-marker-inside/outside-lease  the lease boundary, +/-1h,
+#                           derived from MARKER_LEASE_SECONDS. They must
+#                           always DISAGREE: 6c state=Y, 6d state=N. If they
+#                           ever read the same the exemption has stopped
+#                           being bounded, which is defect B in a new form.
+#                           Their predecessors set only last_injected_at
+#                           apart and did NOT straddle anything: a lease of
+#                           10 years left the whole suite green. Measured.
+#   gate06e-stale-same-session  state=N. RECORDS A BEHAVIOUR CHANGE, not a
+#                           defect. Before the GC moved ahead of the
+#                           defensive gates this was a Gate 5 soft-pause that
+#                           PRESERVED state. Deliberate — 24h with no
+#                           iteration is idle — but see the gate05 note
+#                           below, which warns against disarming
+#                           same-session pauses. Deletion is stronger than
+#                           disarming, so the two notes must be read together.
+#   gate06f-marker-future-dated  state=N. A marker timestamped in the FUTURE
+#                           earns no exemption. A one-sided age<lease test
+#                           passes for every negative age and grants a
+#                           permanent exemption; clock skew alone reaches it.
 #   gate06d-stale-marker-expired-lease  now AND after a fix: state=N.
 #                           Deliberately unchanged. It is the other side of
 #                           6c: once the lease expires the marker stops
@@ -93,13 +108,20 @@
 #                           resume. Do NOT fold it in with gate04: disarming
 #                           it would kill a loop its owner still wants.
 #                           after a fix: message only; active stays true.
-#   gate12-lock-held        FIXED (B-2b) — no longer a frozen defect. It now
-#                           pins the repaired behaviour: lock=Y, because a
-#                           non-owner must not rmdir, plus a systemMessage
-#                           telling the user how to clear a stale lock (the
-#                           deleted rmdir was also the only stale-lock
-#                           cleanup). If this row returns to lock=N,
-#                           ownership tracking has regressed.
+#   gate12-lock-contention  lock=Y — a non-owner must never rmdir. If this
+#                           returns to lock=N, ownership tracking regressed.
+#   gate12-lock-orphan-reclaimed  decision=block — the loop ADVANCES. A lock
+#                           with no possible live holder is reclaimed rather
+#                           than pausing forever. This pair replaces a single
+#                           row that conflated the two: it pre-created a bare
+#                           lock dir, labelled it contention, and pinned
+#                           soft-pause-forever as correct. Because this gate
+#                           precedes EVERY other gate including the idle GC,
+#                           that made one orphaned lock wedge the loop
+#                           permanently — state could never be collected —
+#                           and the only row covering stale locks certified
+#                           it as intended. If this row becomes approve/
+#                           state=Y, the deadlock is back.
 #                           NOTE, measured: simply deleting the rmdir from
 #                           soft_pause() flips SIX rows — gate02, gate04,
 #                           gate05, gate05b, gate09b, gate12 — because five
@@ -125,10 +147,12 @@ gate04-session-mismatch    | approve | state=Y active=true  marker=N(-) lock=N i
 gate05-no-continuation     | approve | state=Y active=true  marker=N(-) lock=N iter=1/1 | - |  | SOFT-PAUSE: no continuation signal (last_injected_iter=1, gap=<N>s) — user likely took control (state preserved)
 gate05a-grace-inside       | block   | state=Y active=true  marker=Y(2) lock=N iter=2/2 | sentinel="[dual-review-loop iter 2/20]" enforce=1 | dual-review-loop plan iter 2/20 | iter 2 → injecting (brief target: <TMP>/.claude/reviews/iter-002.md)
 gate05b-grace-outside      | approve | state=Y active=true  marker=N(-) lock=N iter=1/1 | - |  | SOFT-PAUSE: no continuation signal (last_injected_iter=1, gap=<N>s) — user likely took control (state preserved)
-gate06-idle-timeout        | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | idle timeout (>86400s)
-gate06b-stale-crosssession | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | idle timeout (>86400s)
-gate06c-stale-marker-fresh-lease | approve | state=Y active=true  marker=Y(1) lock=N iter=1/0 | - | dual-review-loop: iter 1 has not committed yet (plan mode can block commits, or it stopped early). It auto-resumes the moment a commit lands — exit plan mode and let it finish. If this iteration legitimately produced no commit, run /dual-review-loop:cancel-loop (or rm .claude/dual-review-loop.inflight). | in-flight marker present (iter=1) — no commit detected; not advancing (base_sha=<SHA>)
-gate06d-stale-marker-expired-lease | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | idle timeout (>86400s)
+gate06-idle-timeout        | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop: this loop had no activity for over 24h, so its state was collected and the loop has ended. Nothing you committed was touched — only the plugin's own state file and marker. To pick the work back up, start a new loop on the same plan. | idle timeout (>86400s)
+gate06b-stale-crosssession | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop: this loop had no activity for over 24h, so its state was collected and the loop has ended. Nothing you committed was touched — only the plugin's own state file and marker. To pick the work back up, start a new loop on the same plan. | idle timeout (>86400s)
+gate06c-marker-inside-lease | approve | state=Y active=true  marker=Y(1) lock=N iter=1/0 | - | dual-review-loop: iter 1 has not committed yet (plan mode can block commits, or it stopped early). It auto-resumes the moment a commit lands — exit plan mode and let it finish. If this iteration legitimately produced no commit, run /dual-review-loop:cancel-loop (or rm .claude/dual-review-loop.inflight). | in-flight marker present (iter=1) — no commit detected; not advancing (base_sha=<SHA>)
+gate06d-marker-outside-lease | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop: this loop had no activity for over 24h, so its state was collected and the loop has ended. Nothing you committed was touched — only the plugin's own state file and marker. To pick the work back up, start a new loop on the same plan. | idle timeout (>86400s)
+gate06e-stale-same-session | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop: this loop had no activity for over 24h, so its state was collected and the loop has ended. Nothing you committed was touched — only the plugin's own state file and marker. To pick the work back up, start a new loop on the same plan. | idle timeout (>86400s)
+gate06f-marker-future-dated | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop: this loop had no activity for over 24h, so its state was collected and the loop has ended. Nothing you committed was touched — only the plugin's own state file and marker. To pick the work back up, start a new loop on the same plan. | idle timeout (>86400s)
 gate07-inflight-nocommit   | approve | state=Y active=true  marker=Y(1) lock=N iter=1/0 | - | dual-review-loop: iter 1 has not committed yet (plan mode can block commits, or it stopped early). It auto-resumes the moment a commit lands — exit plan mode and let it finish. If this iteration legitimately produced no commit, run /dual-review-loop:cancel-loop (or rm .claude/dual-review-loop.inflight). | in-flight marker present (iter=1) — no commit detected; not advancing (base_sha=<SHA>)
 gate08-plan-relative       | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | FAIL-OPEN: plan_path not absolute: relative/plan.md
 gate09a-all-complete       | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | all tasks complete after 1 iterations
@@ -140,4 +164,5 @@ gate11-open-questions      | approve | state=N active=-     marker=N(-) lock=N i
 gate11n1-none-bullet       | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | Open Questions detected in last brief — user decision needed
 gate11n2-h3-heading        | block   | state=Y active=true  marker=Y(2) lock=N iter=2/2 | sentinel="[dual-review-loop iter 2/20]" enforce=1 | dual-review-loop plan iter 2/20 | iter 2 → injecting (brief target: <TMP>/.claude/reviews/iter-002.md)
 gate11n3-star-bullet       | block   | state=Y active=true  marker=Y(2) lock=N iter=2/2 | sentinel="[dual-review-loop iter 2/20]" enforce=1 | dual-review-loop plan iter 2/20 | iter 2 → injecting (brief target: <TMP>/.claude/reviews/iter-002.md)
-gate12-lock-held           | approve | state=Y active=true  marker=N(-) lock=Y iter=1/0 | - | dual-review-loop: another hook instance holds the lock, so this turn did not advance. If no other loop is running, the lock is stale — remove it with: rmdir .claude/dual-review-loop.lock | SOFT-PAUSE: lock contention (state preserved)
+gate12-lock-contention     | approve | state=Y active=true  marker=N(-) lock=Y iter=1/0 | - | dual-review-loop: another hook instance holds the lock, so this turn did not advance. A lock with no live holder is reclaimed automatically after 10 minutes. To clear it now: rmdir <TMP>/.claude/dual-review-loop.lock | SOFT-PAUSE: lock contention (state preserved)
+gate12-lock-orphan-reclaimed | block   | state=Y active=true  marker=Y(2) lock=N iter=2/2 | sentinel="[dual-review-loop iter 2/20]" enforce=1 | dual-review-loop plan iter 2/20 | iter 2 → injecting (brief target: <TMP>/.claude/reviews/iter-002.md)

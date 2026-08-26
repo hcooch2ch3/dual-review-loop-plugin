@@ -68,7 +68,11 @@ elapsed time since loop start — including every minute the loop sits paused wa
 for you — then DELETES loop state when it fires. Any finite default small enough to
 be useful was small enough to kill a healthy loop. Pass `--max-minutes M` explicitly
 if you want a hard wall-clock stop. Abandoned loops are still collected by the 24h
-idle gate (Gate 6), which measures idleness rather than elapsed time.
+idle gate (Gate 6), which measures idleness rather than elapsed time. One exception:
+a loop holding an in-flight marker (it stopped mid-iteration) is given 48h instead,
+so a run that is merely waiting on you is not reaped out from under you. The lease is
+bounded on purpose — a marker left behind by a killed instance must not protect a dead
+loop forever.
 
 Task mode also enforces cumulative caps: `--max-files 30`, `--max-loc 1500`,
 `--max-reviews 15` (Gates 10c–e). Plan mode defaults these to "Infinity" so they
@@ -111,8 +115,12 @@ The hook `soft_pause`s (state preserved, no inject) in several scenarios. The Cl
 - **"another hook instance holds the lock"** — two hook fires overlapped and this one
   stood down. Normally self-correcting. If it repeats with no other loop running, the
   lock is stale (an instance was killed before it could release):
-  `rmdir .claude/dual-review-loop.lock`. The hook will not remove a lock it did not
-  acquire, because a non-owner deleting one destroys mutual exclusion.
+  a lock with no possible live holder is reclaimed automatically after 10 minutes,
+  and the pause message prints the absolute path if you want to clear it sooner:
+  `rmdir .claude/dual-review-loop.lock`. The hook never removes a lock it did not
+  acquire — a non-owner deleting one destroys mutual exclusion — so the reclaim is
+  gated on an age no live holder can reach (a lock is held for the lifetime of one
+  hook invocation, i.e. seconds).
 - **"every task in the plan is complete, but the working tree still has uncommitted
   changes"** — Gate 9 refuses to declare completion over a dirty tree, since the last
   iteration's commit may not have landed. Commit or stash, and the loop finishes on the
@@ -135,8 +143,16 @@ hook emits on completion, on every `soft_pause`, and on every fail-open. So "8
 consecutive blocks" and "8 blocks per turn" are the same quantity, and any pause is
 already a turn boundary.
 
-Practical consequence: a loop that runs more than 8 uninterrupted iterations needs one
-user turn boundary along the way. Pauses supply them naturally.
+Practical consequence, stated precisely: a loop cannot exceed 8 iterations inside a
+single user turn. The cap resets when a turn ends, and every `approve` ends a turn —
+but an `approve` is also the hook declining to inject, so a pause supplies a turn
+boundary *and* stops the run. A pause is therefore not a free reset: reaching a high
+iteration count needs the user to say something after the loop pauses.
+
+Caveat on the measurement: it was taken with a single registered Stop hook. If other
+plugins on your machine also return `decision:"block"` from a Stop hook, whether the
+budget is per-hook or shared across all of them is **unmeasured**, and a shared budget
+would mean another plugin can consume this loop's.
 
 ## Architecture (quick reference)
 

@@ -273,22 +273,69 @@ write_state "$(base_state "$t" | jq '.session_id="vanished-session"
   | .last_injected_at_epoch=1000000000')" "$t"
 observe "gate06b-stale-crosssession" "$t"
 
-# Stale, but an in-flight marker written within the lease window: the loop was
-# mid-iteration recently, so the GC must leave it alone and let Gate 7 handle it.
-t=$(setup_repo g6c)
-write_state "$(base_state "$t" | jq '.last_iter_at_epoch=1000000000 | .started_at_epoch=1000000000')" "$t"
-printf '1
-' > "$t/.claude/dual-review-loop.inflight"
-observe "gate06c-stale-marker-fresh-lease" "$t"
+# 6c/6d straddle the lease boundary at +/-1h, DERIVED from the hook's own
+# constant. An earlier version set only `last_injected_at_epoch` apart (now vs
+# year-2001) and left the other timestamp stale — two problems. First, the hook
+# writes `last_iter_at_epoch` and `last_injected_at_epoch` to the same value on
+# every inject, so that state is unreachable in practice. Second, and worse: ANY
+# lease between 24h and ~25 years produced an identical matrix, so widening the
+# constant to 10 years — removing the bound entirely — left the whole suite
+# green. Measured. That is the hole the gate05a/gate05b pair was built to close
+# for PHANTOM_GRACE_SECONDS; it was not carried over here. Deriving from the hook
+# means moving the constant in either direction flips a row.
+# FIXED offsets, deliberately NOT derived from the hook. Deriving them was the
+# first attempt and it is self-defeating: fixtures computed from the constant
+# move with it, so the rows stay green for ANY value and detect nothing —
+# verified, a 10-year lease left the matrix fully green. gate05a/gate05b pin
+# PHANTOM_GRACE_SECONDS the right way, with literals 60s either side of 600.
+# 47h/49h bracket the documented 48h. Change the constant and one of these flips;
+# that is the whole job. (docs-consistency.test.sh separately asserts the docs
+# quote whatever the hook actually says, so the two checks cover both directions.)
+INSIDE=$(( 47 * 3600 ))
+OUTSIDE=$(( 49 * 3600 ))
 
-# Same shape, but the marker's lease has expired — nothing here is alive, so the
-# exemption must not apply and the state is collected.
+# Marker present, age just INSIDE the lease: exempt from collection and handed to
+# Gate 7, which can still recover it.
+t=$(setup_repo g6c)
+write_state "$(base_state "$t" | jq --argjson age "$INSIDE" \
+  '.last_iter_at_epoch=(.last_iter_at_epoch-$age)
+   | .started_at_epoch=(.started_at_epoch-$age)
+   | .last_injected_at_epoch=(.last_injected_at_epoch-$age)')" "$t"
+printf '1' > "$t/.claude/dual-review-loop.inflight"
+observe "gate06c-marker-inside-lease" "$t"
+
+# Same shape, 2h older — just OUTSIDE the lease. The marker stops excusing the
+# state and it is collected. 6c and 6d must always disagree.
 t=$(setup_repo g6d)
-write_state "$(base_state "$t" | jq '.last_iter_at_epoch=1000000000 | .started_at_epoch=1000000000
+write_state "$(base_state "$t" | jq --argjson age "$OUTSIDE" \
+  '.last_iter_at_epoch=(.last_iter_at_epoch-$age)
+   | .started_at_epoch=(.started_at_epoch-$age)
+   | .last_injected_at_epoch=(.last_injected_at_epoch-$age)')" "$t"
+printf '1' > "$t/.claude/dual-review-loop.inflight"
+observe "gate06d-marker-outside-lease" "$t"
+
+# A marker timestamped in the FUTURE (clock skew, bad RTC, a state file copied
+# between machines) must NOT earn an exemption. A one-sided `age < lease` test
+# passes for every negative age, granting a PERMANENT exemption and recreating
+# exactly the immortal state the GC exists to collect.
+t=$(setup_repo g6f)
+write_state "$(base_state "$t" | jq \
+  '.last_iter_at_epoch=1000000000 | .started_at_epoch=1000000000
+   | .last_injected_at_epoch=(.last_injected_at_epoch+315360000)')" "$t"
+printf '1' > "$t/.claude/dual-review-loop.inflight"
+observe "gate06f-marker-future-dated" "$t"
+
+# Stale + SAME session + no continuation signal. Before the GC moved ahead of the
+# defensive gates this was a Gate 5 soft-pause that PRESERVED state; the GC now
+# reaches it first and deletes. That is a deliberate call — 24h with no iteration
+# is idle by any reading — but it is a real behaviour change on the very gate
+# whose golden note warns against disarming same-session pauses, so it gets a row
+# rather than passing unrecorded.
+t=$(setup_repo g6e)
+write_state "$(base_state "$t" | jq '.last_injected_iter=1
+  | .last_iter_at_epoch=1000000000 | .started_at_epoch=1000000000
   | .last_injected_at_epoch=1000000000')" "$t"
-printf '1
-' > "$t/.claude/dual-review-loop.inflight"
-observe "gate06d-stale-marker-expired-lease" "$t"
+observe "gate06e-stale-same-session" "$t"
 
 # Gate 7 — in-flight marker present, HEAD unmoved from inflight_base_sha
 t=$(setup_repo g7); write_state "$(base_state "$t")" "$t"
@@ -390,10 +437,29 @@ t=$(setup_repo g11n3); b=$(brief "$t" '## Open Questions' '* **Q1 — a real que
 write_state "$(base_state "$t" | jq --arg b "$b" '.last_brief_path=$b')" "$t"
 observe "gate11n3-star-bullet" "$t"
 
-# Gate 12 — lock directory already held
+# Gate 12 — TWO distinct cases the single old row conflated.
+#
+# The old fixture pre-created a bare lock dir and called it "contention", but a
+# directory with no live holder is an ORPHAN. The golden then pinned
+# soft-pause-forever as correct for it. That mattered: this gate precedes every
+# other gate including the idle GC, so one orphan wedged the loop permanently and
+# the state could never be collected — and the only row covering stale locks
+# certified that as intended. Splitting them makes the outcomes distinguishable.
+#
+# Contention: lock created just now, so a live holder is plausible and standing
+# down is right. The lock must SURVIVE — a non-owner must never rmdir.
 t=$(setup_repo g12); write_state "$(base_state "$t")" "$t"
 mkdir -p "$t/.claude/dual-review-loop.lock"
-observe "gate12-lock-held" "$t"
+observe "gate12-lock-contention" "$t"
+
+# Orphan: the lock predates any possible live holder (a lock is held for the
+# lifetime of ONE hook invocation — seconds). It must be RECLAIMED and the hook
+# must proceed, not pause. `touch -t` with a fixed past stamp is POSIX and avoids
+# the date(1) portability split between BSD and GNU.
+t=$(setup_repo g12o); write_state "$(base_state "$t")" "$t"
+mkdir -p "$t/.claude/dual-review-loop.lock"
+touch -t 200101010000 "$t/.claude/dual-review-loop.lock"
+observe "gate12-lock-orphan-reclaimed" "$t"
 
 # ADVANCE — every gate passes; the hook must inject the next iteration.
 # This is the most important row: it is the only one that proves the happy path
@@ -474,11 +540,26 @@ if [ "$UPDATE" -eq 1 ] || [ "$MISSING_GOLDEN" -eq 1 ]; then
     echo "#                           pins the repaired behaviour: state=N, log = idle"
     echo "#                           timeout. Back to state=Y and the GC has fallen"
     echo "#                           behind the defensive gates again."
-    echo "#   gate06c-stale-marker-fresh-lease  FIXED (B-1) — pins state=Y. An"
-    echo "#                           in-flight marker within its lease defers"
-    echo "#                           collection and hands the state to Gate 7, which"
-    echo "#                           can still recover it, instead of deleting a loop"
-    echo "#                           that was recently mid-iteration."
+    echo "#   gate06c/06d-marker-inside/outside-lease  the lease boundary, +/-1h,"
+    echo "#                           derived from MARKER_LEASE_SECONDS. They must"
+    echo "#                           always DISAGREE: 6c state=Y, 6d state=N. If they"
+    echo "#                           ever read the same the exemption has stopped"
+    echo "#                           being bounded, which is defect B in a new form."
+    echo "#                           Their predecessors set only last_injected_at"
+    echo "#                           apart and did NOT straddle anything: a lease of"
+    echo "#                           10 years left the whole suite green. Measured."
+    echo "#   gate06e-stale-same-session  state=N. RECORDS A BEHAVIOUR CHANGE, not a"
+    echo "#                           defect. Before the GC moved ahead of the"
+    echo "#                           defensive gates this was a Gate 5 soft-pause that"
+    echo "#                           PRESERVED state. Deliberate — 24h with no"
+    echo "#                           iteration is idle — but see the gate05 note"
+    echo "#                           below, which warns against disarming"
+    echo "#                           same-session pauses. Deletion is stronger than"
+    echo "#                           disarming, so the two notes must be read together."
+    echo "#   gate06f-marker-future-dated  state=N. A marker timestamped in the FUTURE"
+    echo "#                           earns no exemption. A one-sided age<lease test"
+    echo "#                           passes for every negative age and grants a"
+    echo "#                           permanent exemption; clock skew alone reaches it."
     echo "#   gate06d-stale-marker-expired-lease  now AND after a fix: state=N."
     echo "#                           Deliberately unchanged. It is the other side of"
     echo "#                           6c: once the lease expires the marker stops"
@@ -512,13 +593,20 @@ if [ "$UPDATE" -eq 1 ] || [ "$MISSING_GOLDEN" -eq 1 ]; then
     echo "#                           resume. Do NOT fold it in with gate04: disarming"
     echo "#                           it would kill a loop its owner still wants."
     echo "#                           after a fix: message only; active stays true."
-    echo "#   gate12-lock-held        FIXED (B-2b) — no longer a frozen defect. It now"
-    echo "#                           pins the repaired behaviour: lock=Y, because a"
-    echo "#                           non-owner must not rmdir, plus a systemMessage"
-    echo "#                           telling the user how to clear a stale lock (the"
-    echo "#                           deleted rmdir was also the only stale-lock"
-    echo "#                           cleanup). If this row returns to lock=N,"
-    echo "#                           ownership tracking has regressed."
+    echo "#   gate12-lock-contention  lock=Y — a non-owner must never rmdir. If this"
+    echo "#                           returns to lock=N, ownership tracking regressed."
+    echo "#   gate12-lock-orphan-reclaimed  decision=block — the loop ADVANCES. A lock"
+    echo "#                           with no possible live holder is reclaimed rather"
+    echo "#                           than pausing forever. This pair replaces a single"
+    echo "#                           row that conflated the two: it pre-created a bare"
+    echo "#                           lock dir, labelled it contention, and pinned"
+    echo "#                           soft-pause-forever as correct. Because this gate"
+    echo "#                           precedes EVERY other gate including the idle GC,"
+    echo "#                           that made one orphaned lock wedge the loop"
+    echo "#                           permanently — state could never be collected —"
+    echo "#                           and the only row covering stale locks certified"
+    echo "#                           it as intended. If this row becomes approve/"
+    echo "#                           state=Y, the deadlock is back."
     echo "#                           NOTE, measured: simply deleting the rmdir from"
     echo "#                           soft_pause() flips SIX rows — gate02, gate04,"
     echo "#                           gate05, gate05b, gate09b, gate12 — because five"
