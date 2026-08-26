@@ -46,6 +46,25 @@
 #                           destroys state, same class as gate01. (A plan
 #                           path that is absolute but missing takes the same
 #                           fail_open branch and has no row at all.)
+#   gate06b-stale-crosssession  now: state=Y — a state that is BOTH long
+#                           past the idle timeout AND owned by a session that
+#                           no longer exists is PRESERVED, because Gate 4
+#                           pauses on session mismatch and the idle GC sits
+#                           behind it. The dead state never gets collected and
+#                           every later fire pauses again — 214 fires / 58% of
+#                           the field baseline.
+#                           after a fix: state=N, log = idle timeout
+#   gate06c-stale-marker-fresh-lease  now: state=N — an in-flight marker
+#                           gives no protection at all, so a loop that was
+#                           mid-iteration is collected rather than handed to
+#                           Gate 7.
+#                           after a fix: state=Y (exempt while the lease holds)
+#   gate06d-stale-marker-expired-lease  now AND after a fix: state=N.
+#                           Deliberately unchanged. It is the other side of
+#                           6c: once the lease expires the marker stops
+#                           excusing the state. If 6c and 6d ever agree, the
+#                           exemption has stopped being bounded and defect B
+#                           is back in a new form.
 #   gate09b-dirty-blocks    PARTLY FIXED (B-3) — the pause now carries a
 #                           systemMessage naming the gitignore patterns, so
 #                           it is no longer silent. Completion is still
@@ -106,6 +125,9 @@ gate05-no-continuation     | approve | state=Y active=true  marker=N(-) lock=N i
 gate05a-grace-inside       | block   | state=Y active=true  marker=Y(2) lock=N iter=2/2 | sentinel="[dual-review-loop iter 2/20]" enforce=1 | dual-review-loop plan iter 2/20 | iter 2 → injecting (brief target: <TMP>/.claude/reviews/iter-002.md)
 gate05b-grace-outside      | approve | state=Y active=true  marker=N(-) lock=N iter=1/1 | - |  | SOFT-PAUSE: no continuation signal (last_injected_iter=1, gap=<N>s) — user likely took control (state preserved)
 gate06-idle-timeout        | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | idle timeout (>86400s)
+gate06b-stale-crosssession | approve | state=Y active=true  marker=N(-) lock=N iter=1/0 | - |  | SOFT-PAUSE: different session (test-session != vanished-session) (state preserved)
+gate06c-stale-marker-fresh-lease | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | idle timeout (>86400s)
+gate06d-stale-marker-expired-lease | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | idle timeout (>86400s)
 gate07-inflight-nocommit   | approve | state=Y active=true  marker=Y(1) lock=N iter=1/0 | - | dual-review-loop: iter 1 has not committed yet (plan mode can block commits, or it stopped early). It auto-resumes the moment a commit lands — exit plan mode and let it finish. If this iteration legitimately produced no commit, run /dual-review-loop:cancel-loop (or rm .claude/dual-review-loop.inflight). | in-flight marker present (iter=1) — no commit detected; not advancing (base_sha=<SHA>)
 gate08-plan-relative       | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | FAIL-OPEN: plan_path not absolute: relative/plan.md
 gate09a-all-complete       | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | all tasks complete after 1 iterations

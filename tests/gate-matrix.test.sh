@@ -251,6 +251,45 @@ t=$(setup_repo g6)
 write_state "$(base_state "$t" | jq '.last_iter_at_epoch=1000000000 | .started_at_epoch=1000000000')" "$t"
 observe "gate06-idle-timeout" "$t"
 
+# Idle-GC boundary rows. The GC judgement has two inputs — staleness and the
+# in-flight marker — and before these rows existed only two of the four corners
+# were covered (gate06 = stale + no marker, gate07 = fresh + marker), so the
+# marker's effect on GC was untested in both directions.
+#
+# 6b is the one that shows defect B: a state that is BOTH long-dead and owned by
+# a vanished session. Gate 4 pauses on session mismatch and the GC sits after it,
+# so the dead state is preserved forever and every later fire pauses again. That
+# is the field baseline's most frequent event (214 fires / 58%). Running the GC
+# before the defensive gates is what makes this row flip to a deletion.
+#
+# 6c/6d bracket the marker lease. An UNCONDITIONAL in-flight exemption would
+# recreate defect B in a new form — a marker left behind by a crashed instance
+# would protect a dead state forever — so the exemption has to expire. The two
+# rows sit either side of that expiry, which is why they must disagree: if they
+# ever read the same, the lease has stopped being a bound.
+t=$(setup_repo g6b)
+write_state "$(base_state "$t" | jq '.session_id="vanished-session"
+  | .last_iter_at_epoch=1000000000 | .started_at_epoch=1000000000
+  | .last_injected_at_epoch=1000000000')" "$t"
+observe "gate06b-stale-crosssession" "$t"
+
+# Stale, but an in-flight marker written within the lease window: the loop was
+# mid-iteration recently, so the GC must leave it alone and let Gate 7 handle it.
+t=$(setup_repo g6c)
+write_state "$(base_state "$t" | jq '.last_iter_at_epoch=1000000000 | .started_at_epoch=1000000000')" "$t"
+printf '1
+' > "$t/.claude/dual-review-loop.inflight"
+observe "gate06c-stale-marker-fresh-lease" "$t"
+
+# Same shape, but the marker's lease has expired — nothing here is alive, so the
+# exemption must not apply and the state is collected.
+t=$(setup_repo g6d)
+write_state "$(base_state "$t" | jq '.last_iter_at_epoch=1000000000 | .started_at_epoch=1000000000
+  | .last_injected_at_epoch=1000000000')" "$t"
+printf '1
+' > "$t/.claude/dual-review-loop.inflight"
+observe "gate06d-stale-marker-expired-lease" "$t"
+
 # Gate 7 — in-flight marker present, HEAD unmoved from inflight_base_sha
 t=$(setup_repo g7); write_state "$(base_state "$t")" "$t"
 printf '1\n' > "$t/.claude/dual-review-loop.inflight"
@@ -426,6 +465,25 @@ if [ "$UPDATE" -eq 1 ] || [ "$MISSING_GOLDEN" -eq 1 ]; then
     echo "#                           destroys state, same class as gate01. (A plan"
     echo "#                           path that is absolute but missing takes the same"
     echo "#                           fail_open branch and has no row at all.)"
+    echo "#   gate06b-stale-crosssession  now: state=Y — a state that is BOTH long"
+    echo "#                           past the idle timeout AND owned by a session that"
+    echo "#                           no longer exists is PRESERVED, because Gate 4"
+    echo "#                           pauses on session mismatch and the idle GC sits"
+    echo "#                           behind it. The dead state never gets collected and"
+    echo "#                           every later fire pauses again — 214 fires / 58% of"
+    echo "#                           the field baseline."
+    echo "#                           after a fix: state=N, log = idle timeout"
+    echo "#   gate06c-stale-marker-fresh-lease  now: state=N — an in-flight marker"
+    echo "#                           gives no protection at all, so a loop that was"
+    echo "#                           mid-iteration is collected rather than handed to"
+    echo "#                           Gate 7."
+    echo "#                           after a fix: state=Y (exempt while the lease holds)"
+    echo "#   gate06d-stale-marker-expired-lease  now AND after a fix: state=N."
+    echo "#                           Deliberately unchanged. It is the other side of"
+    echo "#                           6c: once the lease expires the marker stops"
+    echo "#                           excusing the state. If 6c and 6d ever agree, the"
+    echo "#                           exemption has stopped being bounded and defect B"
+    echo "#                           is back in a new form."
     echo "#   gate09b-dirty-blocks    PARTLY FIXED (B-3) — the pause now carries a"
     echo "#                           systemMessage naming the gitignore patterns, so"
     echo "#                           it is no longer silent. Completion is still"
