@@ -282,6 +282,26 @@ case " $SCHEMA_VERSIONS_OK " in
        "dual-review-loop paused: state schema '$SCHEMA' unknown. To resume: install a hook supporting this schema, OR run /dual-review-loop:cancel-loop (or rm $STATE_FILE) to start over." ;;
 esac
 
+# Gate 2b: numeric fields must actually be numeric.
+#
+# The coercion above keeps a corrupt value from detonating in bash arithmetic, but
+# coercing to 0 quietly RELABELS the state: a garbage timestamp reads as epoch
+# 1970, the idle GC collects it, and the user is told "no activity for over 24h"
+# — a specific factual claim about their loop that never happened, on the path
+# where they are least able to check it. Corrupt state is not idle state. Say so.
+#
+# Deliberately AFTER Gate 2: a future schema may legitimately type these fields
+# differently, and fail_open deletes state. Running this first would delete every
+# future-schema state — the exact failure the schema gate exists to prevent, and
+# what midflight M4/M5 assert against.
+BAD_NUMERIC=$(jq -r '
+  [ to_entries[]
+    | select(.key | test("^(iteration|max_iterations|max_minutes|started_at_epoch|last_iter_at_epoch|last_injected_at_epoch|last_injected_iter|max_files|max_loc|max_reviews|reviews_baseline)$"))
+    | select(.value != null and (.value | type) != "number")
+    | .key ]
+  | join(", ")' "$STATE_FILE" 2>/dev/null || echo "")
+[ -z "$BAD_NUMERIC" ] || fail_open "non-numeric value in numeric state field(s): $BAD_NUMERIC"
+
 # Gate 3: active
 [ "$ACTIVE" = "true" ] || cleanup_and_approve "state.active != true"
 

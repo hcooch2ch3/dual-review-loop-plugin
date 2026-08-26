@@ -192,7 +192,16 @@ done
 REPO_GI="$ROOT/.gitignore"
 if [ -f "$REPO_GI" ]; then
   gimiss=""
-  LC_ALL=C grep -Eq 'dual-review-loop\.(\*|state|log|lock|inflight)' "$REPO_GI" || gimiss="$gimiss state/log/lock"
+  # The state/log/lock slot needs the glob OR every individual file. An earlier
+  # version accepted any ONE of them, so a repo listing only the state file read
+  # as compliant while an untracked .log kept the tree dirty forever — looser than
+  # the failure it guards against.
+  if ! LC_ALL=C grep -Eq 'dual-review-loop\.\*' "$REPO_GI"; then
+    for one in state.json log lock inflight; do
+      LC_ALL=C grep -Eq "dual-review-loop\\.$one" "$REPO_GI" \
+        || gimiss="$gimiss .claude/dual-review-loop.$one"
+    done
+  fi
   LC_ALL=C grep -Eq 'dual-review-loop/' "$REPO_GI"                                || gimiss="$gimiss .claude/dual-review-loop/"
   LC_ALL=C grep -Eq '\.claude/reviews/' "$REPO_GI"                                || gimiss="$gimiss .claude/reviews/"
   if [ -z "$gimiss" ]; then
