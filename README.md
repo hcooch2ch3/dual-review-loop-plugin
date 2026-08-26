@@ -132,27 +132,34 @@ The hook `soft_pause`s (state preserved, no inject) in several scenarios. The Cl
 
 ## Stop-hook block budget
 
-Claude Code caps how many times a Stop hook may block **per user turn** —
-`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, default **8**. The 9th block in the same turn is
-overridden and the turn ends.
+Claude Code caps how many times a Stop hook may block, via
+`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` (default **8**). Beyond that the block is overridden
+and the turn ends.
 
-Measured on CLI 2.1.221 (headless `claude -p`, single registered Stop hook), the cap
-**resets every user turn** — it is not a lifetime ceiling, so `--max-iters 20` is
-reachable. It resets because **every `approve` ends the turn**: an approve is what the
-hook emits on completion, on every `soft_pause`, and on every fail-open. So "8
-consecutive blocks" and "8 blocks per turn" are the same quantity, and any pause is
-already a turn boundary.
+**Two observations that do not agree. Both are recorded here because the disagreement
+is the useful part.**
 
-Practical consequence, stated precisely: a loop cannot exceed 8 iterations inside a
-single user turn. The cap resets when a turn ends, and every `approve` ends a turn —
-but an `approve` is also the hook declining to inject, so a pause supplies a turn
-boundary *and* stops the run. A pause is therefore not a free reset: reaching a high
-iteration count needs the user to say something after the loop pauses.
+*Probe, CLI 2.1.221, headless `claude -p`, single registered Stop hook, a throwaway hook
+that always blocked and did no work between blocks:* the hook fired 9 times per user
+turn — blocks 1–8 honoured, the 9th overridden — and the count reset on the next turn.
 
-Caveat on the measurement: it was taken with a single registered Stop hook. If other
-plugins on your machine also return `decision:"block"` from a Stop hook, whether the
-budget is per-hook or shared across all of them is **unmeasured**, and a shared budget
-would mean another plugin can consume this loop's.
+*Real run, same CLI version, this plugin's hook, a 10-task plan:* the loop injected
+**9 times inside a single headless invocation** and ran to `all tasks complete` after 9
+iterations, with every injected iteration doing real work (edit, dual review, commit).
+No override was observed at 8.
+
+The difference between the two is that the probe blocked with nothing in between, while
+the real loop does substantial work — tool calls, subagents, commits — between blocks.
+**We do not know which of those is the operative difference, and this document does not
+guess.** What follows from the pair is narrower than either alone:
+
+- Do not treat 8 as a hard iteration ceiling. A 9-iteration run completed.
+- Do not treat the cap as absent either. A synthetic hook hit an override at 9.
+- `--max-iters 20` has not been observed to completion. 9 has.
+
+If your loop stops without a `systemMessage` somewhere near 8 iterations, this is the
+first thing to suspect, and `.claude/dual-review-loop.log` will show the last gate that
+ran.
 
 ## Architecture (quick reference)
 

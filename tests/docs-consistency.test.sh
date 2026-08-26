@@ -258,11 +258,19 @@ has "README prints the stale-lock recovery command on one line" "$README" "rmdir
 # ---------------------------------------------------------------------------
 has "README documents the block cap and its env var" "$README" \
     "CLAUDE_CODE_STOP_HOOK_BLOCK_CAP"
+# The block-cap section must keep BOTH observations. A dogfood run injected 9
+# times in one headless invocation and completed, which contradicts the earlier
+# probe's "9th block is overridden". Collapsing that back to a single confident
+# claim — in either direction — is the exact error this project has now made
+# three times: a measurement taken under one condition, generalised to another.
 if LC_ALL=C awk -v RS='' \
-     '/CLAUDE_CODE_STOP_HOOK_BLOCK_CAP/ && (/per user turn/ || /per turn/) { found=1 } END { exit !found }' "$README"; then
-  ok "README states the cap is per turn in the same paragraph as the cap itself"
+     '/CLAUDE_CODE_STOP_HOOK_BLOCK_CAP/ { seen=1 }
+      /9 times inside a single headless invocation/ { real=1 }
+      /always blocked and did no work between blocks/ { probe=1 }
+      END { exit !(seen && real && probe) }' "$README"; then
+  ok "README records both the probe and the real-run observation of the block cap"
 else
-  fail "README does not tie 'per turn' to the block cap — the phrase alone can come from anywhere in the file"
+  fail "README no longer carries both block-cap observations — do not reduce them to one claim without a new measurement"
 fi
 
 echo ""
