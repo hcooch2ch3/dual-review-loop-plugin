@@ -46,13 +46,22 @@
 #                           destroys state, same class as gate01. (A plan
 #                           path that is absolute but missing takes the same
 #                           fail_open branch and has no row at all.)
-#   gate09b-dirty-blocks    now: completion unreachable because an untracked
-#                           state file / brief keeps the tree dirty
-#                           after a fix: gitignore guidance covers .claude/
-#   gate09c-plan-outside-repo  now: 'all tasks complete' + state deleted even
-#                           though the real repo tree is DIRTY — Gate 9 checks
-#                           dirname(plan_path), not the repo root
-#                           after a fix: SOFT-PAUSE, state=Y active=true
+#   gate09b-dirty-blocks    PARTLY FIXED (B-3) — the pause now carries a
+#                           systemMessage naming the gitignore patterns, so
+#                           it is no longer silent. Completion is still
+#                           unreachable while an untracked state file or
+#                           brief keeps the tree dirty: that is the correct
+#                           refusal, and the guidance in commands/ + README
+#                           is what stops a compliant repo from hitting it.
+#   gate09c-plan-outside-repo  FIXED (B-3) — no longer a frozen defect.
+#                           It used to declare 'all tasks complete' and
+#                           delete state over a DIRTY repo, because Gate 9
+#                           checked dirname(plan_path) instead of REPO_ROOT
+#                           and a plan at the /plan default is outside any
+#                           repo, skipping the check entirely. Now pins the
+#                           repaired behaviour: SOFT-PAUSE, state=Y
+#                           active=true. Reverting to state=N here means
+#                           the repo-scope fix regressed.
 #   gate04-session-mismatch now: active=true after a CROSS-SESSION pause and
 #                           an EMPTY systemMessage, so the state stays armed
 #                           and the user sees a turn end with no explanation.
@@ -100,8 +109,8 @@ gate06-idle-timeout        | approve | state=N active=-     marker=N(-) lock=N i
 gate07-inflight-nocommit   | approve | state=Y active=true  marker=Y(1) lock=N iter=1/0 | - | dual-review-loop: iter 1 has not committed yet (plan mode can block commits, or it stopped early). It auto-resumes the moment a commit lands — exit plan mode and let it finish. If this iteration legitimately produced no commit, run /dual-review-loop:cancel-loop (or rm .claude/dual-review-loop.inflight). | in-flight marker present (iter=1) — no commit detected; not advancing (base_sha=<SHA>)
 gate08-plan-relative       | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | FAIL-OPEN: plan_path not absolute: relative/plan.md
 gate09a-all-complete       | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | all tasks complete after 1 iterations
-gate09b-dirty-blocks       | approve | state=Y active=true  marker=N(-) lock=N iter=1/0 | - |  | SOFT-PAUSE: no unfinished tasks but uncommitted changes present (state preserved)
-gate09c-plan-outside-repo  | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | all tasks complete after 1 iterations
+gate09b-dirty-blocks       | approve | state=Y active=true  marker=N(-) lock=N iter=1/0 | - | dual-review-loop: every task in the plan is complete, but the working tree still has uncommitted changes, so the loop did not declare completion. Commit or stash them and the loop finishes on the next turn. If the changes are plugin artifacts, add .claude/dual-review-loop.*, .claude/dual-review-loop/ and .claude/reviews/ to .gitignore. | SOFT-PAUSE: no unfinished tasks but uncommitted changes present (state preserved)
+gate09c-plan-outside-repo  | approve | state=Y active=true  marker=N(-) lock=N iter=1/0 | - | dual-review-loop: every task in the plan is complete, but the working tree still has uncommitted changes, so the loop did not declare completion. Commit or stash them and the loop finishes on the next turn. If the changes are plugin artifacts, add .claude/dual-review-loop.*, .claude/dual-review-loop/ and .claude/reviews/ to .gitignore. | SOFT-PAUSE: no unfinished tasks but uncommitted changes present (state preserved)
 gate10-max-iterations      | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | max_iterations reached (20 >= 20)
 gate10b-max-minutes        | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | max_minutes reached (<N>s >= 60s / 1min cap)
 gate11-open-questions      | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | Open Questions detected in last brief — user decision needed

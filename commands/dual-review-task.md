@@ -99,8 +99,11 @@ Append-only thereafter: one block per iteration with the brief summary
 (see §5 step 8).
 
 **Cancel-loop preserves this file** (it is the post-mortem artifact for
-"why did this stop?"). Recommend adding `.claude/dual-review-loop/` to
-`.gitignore`; print a one-line tip if the path is not ignored.
+"why did this stop?"). Recommend adding `.claude/dual-review-loop.*`,
+`.claude/dual-review-loop/` and `.claude/reviews/` to `.gitignore` — three
+distinct patterns, none of which matches the others; print a one-line tip for
+any that is not ignored. Untracked plugin artifacts keep the working tree
+dirty, and Gate 9 will not declare completion over a dirty tree.
 
 ### 4. Emit start brief
 

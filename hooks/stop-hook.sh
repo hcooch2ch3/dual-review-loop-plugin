@@ -313,12 +313,23 @@ case "$MODE" in
     if [ "$UNFINISHED" -eq 0 ] 2>/dev/null; then
       # No unfinished tasks. But if working tree has uncommitted changes,
       # the last iter's commit may not have landed yet — don't declare done.
-      PLAN_DIR=$(dirname "$PLAN_PATH")
-      if git -C "$PLAN_DIR" rev-parse --git-dir >/dev/null 2>&1; then
-        DIRTY=$(git -C "$PLAN_DIR" status --porcelain 2>/dev/null | head -1)
+      #
+      # Scope this to REPO_ROOT, not dirname("$PLAN_PATH"). The loop's repo is
+      # REPO_ROOT by construction — the state file lives under it and that is
+      # where iteration commits land. A plan kept at the `/plan` default
+      # (~/.claude/plans/) is outside any repo, so `git -C` there failed and
+      # the whole dirty check was SKIPPED: the loop declared completion over
+      # the user's uncommitted code. The rev-parse guard stays because
+      # REPO_ROOT falls back to pwd when the hook runs outside a git repo.
+      if git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+        DIRTY=$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | head -1)
         if [ -n "$DIRTY" ]; then
           log "no unfinished tasks but working tree dirty — soft-pause for manual commit"
-          soft_pause "no unfinished tasks but uncommitted changes present"
+          # This lands at the finish line: every task is done and the loop
+          # stops one gate short of completing. Without a message the turn
+          # just ends and the user cannot tell success from a hang.
+          soft_pause "no unfinished tasks but uncommitted changes present" \
+            "dual-review-loop: every task in the plan is complete, but the working tree still has uncommitted changes, so the loop did not declare completion. Commit or stash them and the loop finishes on the next turn. If the changes are plugin artifacts, add .claude/dual-review-loop.*, .claude/dual-review-loop/ and .claude/reviews/ to .gitignore."
         fi
       fi
       cleanup_and_approve "all tasks complete after $ITERATION iterations"

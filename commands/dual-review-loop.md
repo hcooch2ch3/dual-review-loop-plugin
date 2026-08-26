@@ -66,7 +66,12 @@ Schema v2 (was v1) adds `mode` (`"plan"` here, `"task"` for `/dual-review-loop:d
 Path: `<cwd>/.claude/dual-review-loop.state.json` (create `.claude/` dir if missing).
 Write via temp + mv for atomicity.
 
-Add `.claude/dual-review-loop.*` to `.gitignore` if missing (don't commit state/log/lock files).
+Add all three patterns to `.gitignore` if missing — `.claude/dual-review-loop.*`
+(state/log/lock), `.claude/dual-review-loop/` (task logs) and `.claude/reviews/`
+(iteration briefs). They are three distinct paths: the first does not match the
+second (no dot after `loop`) and neither matches the third. Any of them left
+untracked keeps the working tree dirty, and Gate 9 refuses to declare
+`all tasks complete` over a dirty tree — so a repo missing these never finishes.
 
 ### 4. Emit start brief
 

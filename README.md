@@ -73,7 +73,12 @@ Cancel manually: `rm .claude/dual-review-loop.state.json` in project root.
 | State of progress | checkbox flip on the plan file | append-only iteration log at `.claude/dual-review-loop/task-<session>.log.md` |
 | Use when | requirements are pre-decomposed into steps | task is one paragraph; LLM should figure out the decomposition |
 
-Cancel preserves the task log (post-mortem artifact). Add `.claude/dual-review-loop/` to `.gitignore` to keep logs out of git history.
+Cancel preserves the task log (post-mortem artifact). Add `.claude/dual-review-loop.*`
+(state/log/lock), `.claude/dual-review-loop/` (task logs) and `.claude/reviews/`
+(iteration briefs) to `.gitignore` — all three, since none of the patterns matches
+the others. Beyond keeping them out of git history this is load-bearing: Gate 9
+will not declare `all tasks complete` while the working tree is dirty, and
+untracked plugin artifacts are enough to keep it dirty forever.
 
 ## Known issues
 

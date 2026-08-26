@@ -44,6 +44,8 @@ further needed — the agent will exit on its current turn.
 - Does NOT affect other projects' loops (state file is project-local).
 - Mode-agnostic: works on v1 (legacy plan-only) and v2 (plan or task) state files.
 - Task log preserved on purpose — if accumulated logs become noise, remove
-  `.claude/dual-review-loop/` manually (or add it to `.gitignore`).
+  `.claude/dual-review-loop/` manually (or add it to `.gitignore`, alongside
+  `.claude/dual-review-loop.*` and `.claude/reviews/` — three distinct patterns,
+  and any left untracked keeps the tree dirty, which blocks Gate 9 completion).
 - If hook still misfires after cancel: state file removal is the canonical
   defense; remove `.claude/dual-review-loop.state.json` manually if needed.
