@@ -42,6 +42,11 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 LOG_FILE="$REPO_ROOT/.claude/dual-review-loop.log"
 STATE_FILE="$REPO_ROOT/.claude/dual-review-loop.state.json"
 LOCK_DIR="$REPO_ROOT/.claude/dual-review-loop.lock"
+# Lock ownership. Only the invocation whose `mkdir "$LOCK_DIR"` succeeded may
+# remove it. Before this flag existed every exit path ran an unconditional
+# `rmdir`, so an instance that LOST the race deleted the winner's lock and
+# mutual exclusion collapsed (dual review: defect G).
+LOCK_HELD=0
 INFLIGHT_FILE="$REPO_ROOT/.claude/dual-review-loop.inflight"
 REVIEWS_DIR="$REPO_ROOT/.claude/reviews"
 IDLE_TIMEOUT_SECONDS=$((24 * 3600))
@@ -51,6 +56,17 @@ PHANTOM_GRACE_SECONDS=600   # if hook fires within 10min of last inject, assume 
 # upgraded ahead of the command (codex dual review high #2 — atomic migration).
 SCHEMA_VERSIONS_OK="v1 v2"
 
+# Release the lock only if this invocation acquired it. Never returns
+# non-zero: the ERR trap fires on any failing simple command even though only
+# `set -u` is active, so a helper on the exit path must not re-enter it.
+release_lock() {
+  if [ "$LOCK_HELD" = "1" ]; then
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+    LOCK_HELD=0
+  fi
+  return 0
+}
+
 log() {
   mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null
   printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" >> "$LOG_FILE" 2>/dev/null
@@ -59,7 +75,7 @@ log() {
 approve() {
   printf '{"decision":"approve"}\n'
   # release lock if we hold it
-  rmdir "$LOCK_DIR" 2>/dev/null || true
+  release_lock
   exit 0
 }
 
@@ -67,7 +83,7 @@ approve() {
 cleanup_and_approve() {
   log "$1"
   rm -f "$STATE_FILE" "$INFLIGHT_FILE" 2>/dev/null
-  rmdir "$LOCK_DIR" 2>/dev/null || true
+  release_lock
   printf '{"decision":"approve"}\n'
   exit 0
 }
@@ -78,7 +94,7 @@ cleanup_and_approve() {
 # users can't tell why their loop stopped advancing).
 soft_pause() {
   log "SOFT-PAUSE: $1 (state preserved)"
-  rmdir "$LOCK_DIR" 2>/dev/null || true
+  release_lock
   if [ "$#" -ge 2 ] && [ -n "$2" ]; then
     jq -n --arg m "$2" '{"decision":"approve","systemMessage":$m}' 2>/dev/null \
       || printf '{"decision":"approve"}\n'
@@ -92,12 +108,12 @@ soft_pause() {
 fail_open() {
   log "FAIL-OPEN: $1"
   rm -f "$STATE_FILE" "$INFLIGHT_FILE" 2>/dev/null
-  rmdir "$LOCK_DIR" 2>/dev/null || true
+  release_lock
   printf '{"decision":"approve"}\n'
   exit 0
 }
 
-trap 'log "ERR trap fired (line $LINENO)"; rm -f "$INFLIGHT_FILE" 2>/dev/null; rmdir "$LOCK_DIR" 2>/dev/null; printf "{\"decision\":\"approve\"}\n"; exit 0' ERR
+trap 'log "ERR trap fired (line $LINENO)"; rm -f "$INFLIGHT_FILE" 2>/dev/null; release_lock; printf "{\"decision\":\"approve\"}\n"; exit 0' ERR
 
 HOOK_INPUT=$(cat 2>/dev/null || echo "")
 
@@ -111,8 +127,15 @@ command -v jq >/dev/null 2>&1 || fail_open "jq not on PATH"
 mkdir -p "$(dirname "$LOCK_DIR")" 2>/dev/null
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   log "lock held by another hook instance; soft-pause"
-  soft_pause "lock contention"
+  # Recovery hint. Until ownership tracking landed, this path's unconditional
+  # rmdir doubled as the only stale-lock cleanup: a hard-killed instance left
+  # the dir behind and the next loser cleared it. A non-owner must not delete
+  # the lock, so an orphan is now permanent and the user has to clear it —
+  # say so rather than pausing silently forever.
+  soft_pause "lock contention" \
+    "dual-review-loop: another hook instance holds the lock, so this turn did not advance. If no other loop is running, the lock is stale — remove it with: rmdir .claude/dual-review-loop.lock"
 fi
+LOCK_HELD=1
 
 # Gate 1: JSON parses?
 if ! jq -e . "$STATE_FILE" >/dev/null 2>&1; then
@@ -261,7 +284,7 @@ if [ -f "$INFLIGHT_FILE" ]; then
     fi
     log "in-flight marker present (iter=$INFLIGHT_ITER) — no commit detected; not advancing (base_sha=${INFLIGHT_BASE_SHA:-<none>})"
     # Keep state + marker so the next fire / a debugger can still see it.
-    rmdir "$LOCK_DIR" 2>/dev/null || true
+    release_lock
     jq -n --arg m "$PAUSE_MSG" '{"decision":"approve","systemMessage":$m}' 2>/dev/null \
       || printf '{"decision":"approve","systemMessage":"dual-review-loop: previous iter still in-flight; not advancing"}\n'
     exit 0
@@ -562,5 +585,5 @@ jq -n --arg r "$REASON" --arg s "$SYSTEM_MSG" \
   fail_open "final JSON emit failed"
 
 # Release lock; inflight stays until Claude removes it
-rmdir "$LOCK_DIR" 2>/dev/null || true
+release_lock
 exit 0

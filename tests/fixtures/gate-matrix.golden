@@ -64,17 +64,19 @@
 #                           resume. Do NOT fold it in with gate04: disarming
 #                           it would kill a loop its owner still wants.
 #                           after a fix: message only; active stays true.
-#   gate12-lock-held        now: lock=N — this invocation FAILED to acquire
-#                           the lock and then deleted the holder's lock,
-#                           destroying mutual exclusion
-#                           after a fix: lock=Y (a non-owner must not rmdir)
+#   gate12-lock-held        FIXED (B-2b) — no longer a frozen defect. It now
+#                           pins the repaired behaviour: lock=Y, because a
+#                           non-owner must not rmdir, plus a systemMessage
+#                           telling the user how to clear a stale lock (the
+#                           deleted rmdir was also the only stale-lock
+#                           cleanup). If this row returns to lock=N,
+#                           ownership tracking has regressed.
 #                           NOTE, measured: simply deleting the rmdir from
 #                           soft_pause() flips SIX rows — gate02, gate04,
 #                           gate05, gate05b, gate09b, gate12 — because five
-#                           of them legitimately acquired the lock and would
-#                           then leak it. The correct owner-tracking fix
-#                           flips exactly ONE: gate12. Six diffs here means
-#                           the naive fix was taken, not a broken baseline.
+#                           of them legitimately acquire the lock and would
+#                           then leak it. Those five reading lock=N is what
+#                           proves owner paths still release rather than leak.
 #
 # Do not read this file as a specification. A diff here is a question
 # ("did I mean to change this?"), not automatically a failure. Regenerating
@@ -106,4 +108,4 @@ gate11-open-questions      | approve | state=N active=-     marker=N(-) lock=N i
 gate11n1-none-bullet       | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | Open Questions detected in last brief — user decision needed
 gate11n2-h3-heading        | block   | state=Y active=true  marker=Y(2) lock=N iter=2/2 | sentinel="[dual-review-loop iter 2/20]" enforce=1 | dual-review-loop plan iter 2/20 | iter 2 → injecting (brief target: <TMP>/.claude/reviews/iter-002.md)
 gate11n3-star-bullet       | block   | state=Y active=true  marker=Y(2) lock=N iter=2/2 | sentinel="[dual-review-loop iter 2/20]" enforce=1 | dual-review-loop plan iter 2/20 | iter 2 → injecting (brief target: <TMP>/.claude/reviews/iter-002.md)
-gate12-lock-held           | approve | state=Y active=true  marker=N(-) lock=N iter=1/0 | - |  | SOFT-PAUSE: lock contention (state preserved)
+gate12-lock-held           | approve | state=Y active=true  marker=N(-) lock=Y iter=1/0 | - | dual-review-loop: another hook instance holds the lock, so this turn did not advance. If no other loop is running, the lock is stale — remove it with: rmdir .claude/dual-review-loop.lock | SOFT-PAUSE: lock contention (state preserved)
