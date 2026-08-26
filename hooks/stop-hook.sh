@@ -19,7 +19,9 @@
 #   3   active != true
 #   4   session_id mismatch (phantom defense, cross-session)
 #   5   phantom defense (same-session): hook didn't inject the previous turn
-#   6   idle timeout exceeded (24h default)
+#   6   idle timeout exceeded (24h default) — runs early, right after Gate 3,
+#       so a dead cross-session state is collected instead of paused forever.
+#       An in-flight marker defers it for MARKER_LEASE_SECONDS, no longer.
 #   7   in-flight marker present (mid-iter, do not re-fire)
 #   8   plan_path missing/relative
 #   9   plan has no unfinished tasks (AND no uncommitted changes)
@@ -50,6 +52,12 @@ LOCK_HELD=0
 INFLIGHT_FILE="$REPO_ROOT/.claude/dual-review-loop.inflight"
 REVIEWS_DIR="$REPO_ROOT/.claude/reviews"
 IDLE_TIMEOUT_SECONDS=$((24 * 3600))
+# How long an in-flight marker may postpone idle collection. This is a
+# DECISION, not a derived value: it must exceed IDLE_TIMEOUT_SECONDS or the
+# exemption can never apply, and it must be finite or a marker left behind by
+# a crashed instance would protect a dead state forever — which is the
+# immortal-state defect the GC exists to fix, in a new form.
+MARKER_LEASE_SECONDS=$((48 * 3600))
 PHANTOM_GRACE_SECONDS=600   # if hook fires within 10min of last inject, assume continuation
 # v1: plan-mode only (legacy). v2: adds `mode` field + cumulative gates +
 # task mode. Both accepted so v1 in-flight loops do not break when the hook is
@@ -102,6 +110,29 @@ soft_pause() {
     printf '{"decision":"approve"}\n'
   fi
   exit 0
+}
+
+# Is this state idle-dead — past the idle timeout with nothing to excuse it?
+#
+# Shared by the one GC site so the judgement lives in a single place. Callers
+# must only reach this with a schema the hook accepts (Gate 2); an unknown
+# schema may name its timestamp fields differently, every read would fall back
+# to 0, `NOW - 0 > TIMEOUT` would always be true, and the GC would delete every
+# future-schema state it saw.
+#
+# The in-flight marker buys a bounded extension, not immunity. A state whose
+# marker is still within MARKER_LEASE_SECONDS was plausibly mid-iteration, so
+# it is handed to Gate 7 rather than collected. `last_injected_at_epoch` is the
+# marker's clock because the hook writes both at the same moment; when it is
+# absent it reads 0, the comparison is false, and there is NO exemption. That
+# polarity is deliberate — it matches the behaviour before any exemption
+# existed, so a legacy state is never protected by a field it does not have.
+idle_dead() {  # idle_dead <now> <last_activity> <marker_path> <last_injected_at>
+  [ "$(( $1 - $2 ))" -gt "$IDLE_TIMEOUT_SECONDS" ] || return 1
+  if [ -f "$3" ] && [ "$4" -gt 0 ] && [ "$(( $1 - $4 ))" -lt "$MARKER_LEASE_SECONDS" ]; then
+    return 1
+  fi
+  return 0
 }
 
 # Hard fail-open: error path, clean everything
@@ -188,6 +219,25 @@ esac
 # Gate 3: active
 [ "$ACTIVE" = "true" ] || cleanup_and_approve "state.active != true"
 
+# Gate 6 (idle GC): runs HERE, ahead of the defensive gates, not after them.
+#
+# It used to sit between Gate 5 and Gate 7. Every defensive gate in front of it
+# exits before reaching it — Gate 4 soft-pauses on a session mismatch, Gate 5 on
+# a missing continuation signal — so a state owned by a session that no longer
+# exists could never be collected. It was preserved, re-examined on the next
+# fire, paused again, forever. That single path is 214 fires / 58% of the field
+# baseline. Collecting first is what ends it.
+#
+# It must stay AFTER Gate 2. Gate 2 is the schema check, and collecting an
+# unknown schema would delete state the hook does not understand — see idle_dead.
+# It is also after Gate 3, so a state the user explicitly cancelled is logged as
+# cancelled rather than as an idle timeout.
+LAST_ACT=$LAST_ITER_AT
+[ "$LAST_ACT" -eq 0 ] && LAST_ACT=$STARTED_AT
+if idle_dead "$NOW_EPOCH" "$LAST_ACT" "$INFLIGHT_FILE" "$LAST_INJECTED_AT"; then
+  cleanup_and_approve "idle timeout (>${IDLE_TIMEOUT_SECONDS}s)"
+fi
+
 # Gate 4: cross-session phantom defense
 SESSION_ID_HOOK=$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // ""' 2>/dev/null)
 [ -n "$SESSION_ID_STATE" ] || fail_open "state.session_id empty"
@@ -234,12 +284,9 @@ if [ "$LAST_INJECTED_ITER" -gt 0 ]; then
   fi
 fi
 
-# Gate 6: idle timeout
-LAST_ACT=$LAST_ITER_AT
-[ "$LAST_ACT" -eq 0 ] && LAST_ACT=$STARTED_AT
-if [ "$((NOW_EPOCH - LAST_ACT))" -gt "$IDLE_TIMEOUT_SECONDS" ]; then
-  cleanup_and_approve "idle timeout (>${IDLE_TIMEOUT_SECONDS}s)"
-fi
+# Gate 6 ran here until the idle GC moved ahead of Gates 4/5 (see above). It is
+# NOT duplicated here: a second unconditional copy would collect exactly the
+# states the marker lease just exempted, making the lease dead code.
 
 # Gate 7: in-flight marker — previous iter not yet finalized.
 # UNION completion detection (dual review #11): the marker is hook-created but
