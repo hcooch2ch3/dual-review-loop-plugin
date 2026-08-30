@@ -355,12 +355,35 @@ if LC_ALL=C grep -q 'Open Questions\[\[:space:\]\]\*\$' "$HOOK"; then
 else
   fail "hook's Open Questions regex lost its trailing anchor — suffixed headings now stop the loop; README says they do not"
 fi
-if LC_ALL=C awk -v RS='' '
-     index($0,"Open Questions") && index($0,"unscored") { found=1 }
+# The claim to pin is now the THREE-state rule. A doc that says only "suffixed
+# headings are not matched" describes the behaviour this replaced, and would read
+# as "they are ignored" — which is the exact failure the third state removes.
+# Scoped to the BULLET, not the paragraph. Consecutive markdown bullets form a
+# single RS='' record, so a paragraph-mode version passed while the bullet said
+# only "deliberately not matched" — the neighbouring plan-mode bullet supplied
+# the word "pause" and this bullet supplied "unscored". Measured. Blocks here
+# break on a blank line OR a new top-level bullet, the same way the gitignore
+# assertion above is scoped.
+if LC_ALL=C awk '
+     /^[[:space:]]*[-*+] / || /^[[:space:]]*$/ { blk="" }
+     { blk = blk " " $0 }
+     blk ~ /Open Questions/ && blk ~ /unscored/ && blk ~ /paus/ { found=1 }
      END { exit !found }' "$README"; then
-  ok "README documents that a suffixed Open Questions heading is deliberately not matched"
+  ok "README documents the suffixed heading as a PAUSE, not as a silent non-match"
 else
-  fail "README does not document the suffixed-heading non-match — a reviewer using '## Open Questions (unscored)' gets silently ignored"
+  fail "README does not say a suffixed Open Questions heading pauses the loop — describing it only as 'not matched' reads as 'ignored', which is the behaviour the third state removed"
+fi
+# And the hook must still have the third state the README promises.
+if LC_ALL=C grep -q '^oq_ambiguous() {' "$HOOK"; then
+  ok "hook still implements the third classifier state"
+else
+  fail "hook has no oq_ambiguous — README promises a pause the hook cannot produce"
+fi
+# Gate 7 must consult the brief, or the most common stop reports the wrong cause.
+if LC_ALL=C grep -q 'GATE7_OQ=$(oq_first_item' "$HOOK"; then
+  ok "Gate 7 consults the brief before blaming a commit problem"
+else
+  fail "Gate 7 no longer reads the brief — a stop on reviewer disagreement is reported as a plan-mode commit block, and its advice is to continue past it"
 fi
 
 

@@ -342,6 +342,37 @@ t=$(setup_repo g7); write_state "$(base_state "$t")" "$t"
 printf '1\n' > "$t/.claude/dual-review-loop.inflight"
 observe "gate07-inflight-nocommit" "$t"
 
+# Gate 7 + Gate 11 together — the combination that had no row, and is the most
+# likely real stop. The injected prompt tells the model to STOP on Open Questions
+# at step 5, which is BEFORE the commit at step 8 and the marker removal at step
+# 9. So an obedient model leaves exactly this state behind: marker set, nothing
+# committed, brief holding a disagreement. Gate 7 sits ahead of Gate 11 and used
+# to answer for it — naming plan mode as the cause and advising the user to let
+# the iteration finish, i.e. to continue past the disagreement. These two rows
+# pin that Gate 7 now asks the brief first.
+t=$(setup_repo g7oq); write_state "$(base_state "$t" | jq --arg b "$t/.claude/reviews/iter-001.md" '.last_brief_path=$b')" "$t"
+mkdir -p "$t/.claude/reviews"
+printf '## Open Questions\n- A says drop the index, B says keep it\n' > "$t/.claude/reviews/iter-001.md"
+printf '1\n' > "$t/.claude/dual-review-loop.inflight"
+observe "gate07-inflight-open-question" "$t"
+
+# Same, with the heading the terminal detector deliberately does not match. The
+# loop must not terminate on it (that was a measured regression) and must not
+# walk past it either.
+t=$(setup_repo g7amb); write_state "$(base_state "$t" | jq --arg b "$t/.claude/reviews/iter-001.md" '.last_brief_path=$b')" "$t"
+mkdir -p "$t/.claude/reviews"
+printf '## Open Questions (unscored)\n- A says drop the index, B says keep it\n' > "$t/.claude/reviews/iter-001.md"
+printf '1\n' > "$t/.claude/dual-review-loop.inflight"
+observe "gate07-inflight-ambiguous-heading" "$t"
+
+# Gate 11 third state on its own — no marker, so Gate 7 is not involved. Pins
+# that an Open-Questions-shaped heading the detector cannot act on PAUSES
+# (state=Y) rather than advancing in silence, and rather than terminating.
+t=$(setup_repo g11amb); write_state "$(base_state "$t" | jq --arg b "$t/.claude/reviews/iter-001.md" '.last_brief_path=$b')" "$t"
+mkdir -p "$t/.claude/reviews"
+printf '## Open Questions (진짜 결정 필요)\n1. soft_pause 두 곳을 넣을 것인가\n' > "$t/.claude/reviews/iter-001.md"
+observe "gate11-ambiguous-heading" "$t"
+
 # Gate 8 — plan_path not absolute
 t=$(setup_repo g8); write_state "$(base_state "$t" | jq '.plan_path="relative/plan.md"')" "$t"
 observe "gate08-plan-relative" "$t"
@@ -555,6 +586,26 @@ if [ "$UPDATE" -eq 1 ] || [ "$MISSING_GOLDEN" -eq 1 ]; then
     echo "#                           a recoverable iteration count and baseline SHA."
     echo "#                           Note this row moves via fail_open, which has 13"
     echo "#                           call sites — not via cleanup_and_approve."
+    echo "#   gate07-inflight-open-question / -ambiguous-heading  the combination that"
+    echo "#                           had no row and is the most likely real stop. The"
+    echo "#                           prompt says STOP on Open Questions at step 5, the"
+    echo "#                           commit is step 8 and clearing the marker step 9 —"
+    echo "#                           so an OBEDIENT model lands exactly here. Gate 7"
+    echo "#                           sits ahead of Gate 11 and used to answer for it,"
+    echo "#                           naming plan mode and advising the user to let the"
+    echo "#                           iteration finish, i.e. to continue past a"
+    echo "#                           disagreement. Both rows must name the disagreement."
+    echo "#                           If either reverts to the plan-mode wording, the"
+    echo "#                           gate has stopped consulting the brief."
+    echo "#   gate11-ambiguous-heading  the third classifier state. state=Y is the whole"
+    echo "#                           point: an Open-Questions-shaped heading the"
+    echo "#                           detector cannot act on PAUSES with state preserved."
+    echo "#                           It must not terminate (that was a measured"
+    echo "#                           regression on reviewers own notes) and must not"
+    echo "#                           advance (that is the silence the gate exists to"
+    echo "#                           prevent). state=N here means someone made it"
+    echo "#                           terminal; no row at all means it went back to"
+    echo "#                           advancing."
     echo "#   NOT IN THIS FILE        The ERR-trap exits have no rows and cannot get"
     echo "#                           one: observe() drives the hook THROUGH gates, and"
     echo "#                           a trap fires BETWEEN them. A state file that is"

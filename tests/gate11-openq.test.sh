@@ -18,6 +18,10 @@ eval "$(sed -n '/^oq_first_item() {$/,/^}$/p' "$HOOK")"
 command -v oq_first_item >/dev/null 2>&1 \
   || { echo "FATAL: could not extract oq_first_item from the hook — this suite is guarding nothing"; exit 2; }
 
+eval "$(sed -n '/^oq_ambiguous() {$/,/^}$/p' "$HOOK")"
+command -v oq_ambiguous >/dev/null 2>&1 \
+  || { echo "FATAL: could not extract oq_ambiguous from the hook — the third state is guarding nothing"; exit 2; }
+
 fail=0
 cases=0
 # $4 is optional and pins the ITEM the detector prints, not just whether it
@@ -107,6 +111,67 @@ t item-keeps-bold '## Open Questions\n- **A인가 B인가.** 결정 필요\n'   
 # pause is recoverable where a skipped disagreement is not. `fenced-hash` above
 # is the same decision seen from the side that matters.
 t h1-does-not-end '## Open Questions\n- 없음\n# New Section\n- not a question\n' STOP
+
+echo "-- the third state: shaped like Open Questions, not actionable --"
+# Until this existed the classifier had two outcomes, and EVERY near miss fell to
+# "advance". On a gate whose whole purpose is that the loop must not settle a
+# reviewer disagreement by itself, that meant every ambiguity resolved toward the
+# loop settling it by itself. These twelve shapes were measured advancing.
+#
+# The exact heading still terminates the loop and a suffixed one still does NOT
+# — the measured collision (a reviewer using the section for their own notes)
+# does not come back. The suffixed one now PAUSES instead of vanishing: state is
+# preserved, the message names the heading it saw, and renaming it either way
+# resolves it.
+a() {  # $1=label  $2=body  $3=expect AMBIGUOUS|CLEAR
+  local got
+  cases=$((cases+1))
+  if printf '%b' "$2" | oq_ambiguous >/dev/null 2>&1; then got=AMBIGUOUS; else got=CLEAR; fi
+  if [ "$got" = "$3" ]; then
+    printf '  ✓ %-20s %s\n' "$1" "$got"
+  else
+    printf '  ✗ %-20s got=%s want=%s\n' "$1" "$got" "$3"
+    fail=1
+  fi
+}
+
+# Suffixed and decorated headings. The first is the one that cost a real brief:
+# "(진짜 결정 필요)" is the STRONGEST thing a reviewer can attach, and the anchor
+# dropped it. The second is the companion skill contradicting itself — SKILL.md
+# documents both a bare heading with [DEGRADED] bullets AND this suffixed form,
+# and a degraded review is exactly when review coverage is already gone.
+a suffix-ko       '## Open Questions (진짜 결정 필요)\n1. a real question\n'  AMBIGUOUS
+a suffix-degraded '## Open Questions [DEGRADED]\n- unverified critical\n'   AMBIGUOUS
+a suffix-unscored '## Open Questions (unscored)\n- a note\n'                AMBIGUOUS
+a suffix-colon    '## Open Questions:\n- a question\n'                      AMBIGUOUS
+a suffix-count    '## Open Questions (2)\n- a question\n'                   AMBIGUOUS
+a suffix-arrow    '## Open Questions → 해소됨\n- a note\n'                   AMBIGUOUS
+a emoji-heading   '## ❓ Open Questions\n- a question\n'                    AMBIGUOUS
+a bold-heading    '## **Open Questions**\n- a question\n'                   AMBIGUOUS
+a lowercase-q     '## Open questions\n- a question\n'                       AMBIGUOUS
+a h3-suffix       '### Open Questions (unscored)\n- a note\n'               AMBIGUOUS
+
+# Exact heading, but a body the terminal detector structurally cannot read.
+a prose-body      '## Open Questions\nShould we do A or B?\n'               AMBIGUOUS
+a table-body      '## Open Questions\n| q | who |\n|---|---|\n| A? | rev |\n' AMBIGUOUS
+a indented-only   '## Open Questions\n  - a nested question\n'              AMBIGUOUS
+
+# And the cases that must stay CLEAR, or this becomes a loop that never runs.
+a exact-with-item '## Open Questions\n- a real question\n'                  CLEAR
+a exact-numbered  '## Open Questions\n1. a real question\n'                 CLEAR
+a exact-empty     '## Open Questions\n\n## Next\n- x\n'                    CLEAR
+a placeholder     '## Open Questions\n- 없음\n'                             CLEAR
+a prose-none-ko   '## Open Questions\n없다.\n'                              CLEAR
+a prose-none-en   '## Open Questions\nNone.\n'                              CLEAR
+# The body branch DOES strip emphasis, because its placeholder test is anchored.
+# Without the strip these read as content and the loop pauses on a brief that
+# explicitly said there is nothing to decide.
+a prose-none-bold '## Open Questions\n**없다.**\n'                            CLEAR
+a prose-none-tick '## Open Questions\n`none`\n'                             CLEAR
+a no-section      '## Findings\n- something\n'                             CLEAR
+a unrelated-head  '## Questions For Later\n- x\n'                          CLEAR
+# A brief that SHOWS an example inside a fence is quoting, not declaring.
+a fenced-example  '## Findings\n```\n## Open Questions (x)\n- y\n```\n'      CLEAR
 
 echo ""
 if [ "$fail" -eq 0 ]; then

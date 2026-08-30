@@ -156,6 +156,141 @@ soft_pause() {
   exit 0
 }
 
+# These two live up here with the other helpers, NOT down beside Gate 11 where
+# they are mainly used. Bash resolves a function at CALL time, so a definition
+# below its caller is simply not there: Gate 7 consults the brief and sat 200
+# lines above the definitions, so the lookup failed, the `|| VAR=""` fallback
+# swallowed it, and the gate reported "no open question" for every brief it was
+# handed. Silent and total. A golden row for marker-plus-open-question is what
+# surfaced it. Keep them above every caller.
+
+# The third state.
+#
+# The classifier used to have two outcomes: the exact heading terminated the
+# loop, everything else advanced. Dual review measured twelve near misses that
+# all fell to "advance" — a suffixed heading, a decorated one, a lowercase one, a
+# section whose body is prose or a table rather than a list. On a gate that
+# exists so the loop cannot settle a reviewer disagreement by itself, EVERY
+# ambiguity was resolving toward the loop settling it by itself.
+#
+# So: exact heading with a real item -> terminate (oq_first_item, unchanged).
+#     Open-Questions-SHAPED but not actionable -> pause here, state preserved.
+#     Anything else -> advance.
+#
+# This deliberately does NOT re-terminate on suffixed headings. That was measured
+# as a net regression (reviewers use "(unscored)" and "→ 해소됨" for their own
+# notes) and the measurement stands. Pausing is the difference: the loop stops
+# and says which heading it saw, instead of walking past it in silence. Renaming
+# the heading either way clears it.
+#
+# Prints a one-line description of what it saw; exit 0 when it saw something.
+# No apostrophes in the awk program — it lives inside single quotes.
+oq_ambiguous() {
+  awk '
+    /^[[:space:]]*```/ { fence = !fence; next }
+    fence { next }
+
+    /^###?[[:space:]]/ {
+      head = $0
+      sub(/[[:space:]]+$/, "", head)
+      # A heading at the same level or shallower closes an open exact section,
+      # the same rule the terminal detector uses.
+      if (in_oq && length($1) <= level) in_oq = 0
+      if (head ~ /^###?[[:space:]]+Open Questions$/) { level = length($1); in_oq = 1; next }
+      probe = tolower(head)
+      # No emphasis stripping here on purpose: the match is a SUBSTRING test, so
+      # "## **Open Questions**" already contains "open questions". A gsub was
+      # written here first and removing it changed no case in the truth table —
+      # dead code in a classifier is worse than absent code, because the next
+      # reader assumes it is load-bearing. The body branch below strips for real:
+      # there the placeholder test is anchored, so "**없다.**" needs it.
+      if (probe ~ /open[[:space:]]+questions/) {
+        found = 1
+        print "heading " head
+        exit
+      }
+      next
+    }
+
+    # Body of an EXACT section that the terminal detector did not act on. Reached
+    # only when oq_first_item already answered no, so a real top-level item here
+    # is not ours to judge.
+    in_oq {
+      line = $0
+      sub(/[[:space:]]+$/, "", line)
+      if (line ~ /^[[:space:]]*$/) next
+      if (line ~ /^([-*+]|[0-9]+[.)])[[:space:]]+/) next
+      probe = tolower(line)
+      gsub(/[*_`]/, "", probe)
+      sub(/^[[:space:]]+/, "", probe)
+      # An explicit "nothing here" written as prose is an answer, not a question.
+      if (probe ~ /^(없음|없다|해당[[:space:]]*없음|none|no[[:space:]]+open[[:space:]]+questions|n\/a)[[:space:]]*[.]?$/) next
+      if (probe ~ /^\(none/) next
+      # A table separator carries no content of its own.
+      if (probe ~ /^\|?[[:space:]]*:?-+:?[[:space:]]*(\|[[:space:]]*:?-+:?[[:space:]]*)*\|?$/) next
+      found = 1
+      line_short = line
+      print "body " line_short
+      exit
+    }
+    END { exit !found }
+  '
+}
+
+oq_first_item() {
+  awk '
+    # Fenced blocks are quoted material, not document structure. A brief that
+    # shows an example Open Questions section inside ``` must not be read as
+    # having one, and a shell comment inside a fence must not end a real section.
+    # Measured: without this, "## Open Questions" followed by a ```bash block
+    # containing "# rebuild the index" skipped the real question underneath it.
+    /^[[:space:]]*```/ { fence = !fence; next }
+    fence { next }
+
+    # The trailing anchor is load-bearing. Dropping it was measured as a net
+    # regression over the real briefs: it starts stopping on
+    # "## Open Questions (unscored)" and "## Open Questions → 해소됨", which are
+    # reviewers using the section for their own notes. That collision is
+    # semantic and no regex resolves it.
+    /^###?[[:space:]]+Open Questions[[:space:]]*$/ { level = length($1); in_oq = 1; next }
+
+    # End on an h2/h3 at the same level or shallower, so a sub-heading nested
+    # inside the section does not close it. An h1 deliberately does NOT close it,
+    # matching the rule this replaces: treating a stray "# note" as a boundary
+    # would skip the question under it, and a skipped disagreement is the one
+    # outcome this gate exists to prevent. Over-stopping is the safe side.
+    /^###?[[:space:]]/ { if (length($1) <= level) in_oq = 0 }
+
+    # Top-level list items only. Matching indented ones re-stops on a note nested
+    # under a placeholder ("- 없음" then "  - but see X").
+    #
+    # "N." and "N)" count. They were excluded until dual review found a real
+    # brief on this machine — a dual-review synthesis written FOR THIS REPO —
+    # whose two blocking decisions sat under numbered bullets and were walked
+    # straight past. The plan prompt further down already teaches the model that
+    # "N. [ ]" is a checkbox marker alongside "- [ ]"; the detector and that
+    # prompt disagreed about what a list item is, in the same file.
+    #
+    # No apostrophes in this awk program. It lives inside single quotes, so one
+    # terminates the string and breaks the whole script — measured, right here.
+    in_oq && /^([-*+]|[0-9]+[.)])[[:space:]]+/ {
+      item = $0
+      sub(/^([-*+]|[0-9]+[.)])[[:space:]]+/, "", item)
+      sub(/[[:space:]]+$/, "", item)
+      probe = tolower(item)
+      if (probe ~ /^[-*+[:space:]]*$/) next                    # a thematic break
+      # Placeholders are not questions. These rules only ever REMOVE stops.
+      if (probe ~ /^(없음|해당[[:space:]]*없음|none|no[[:space:]]+open[[:space:]]+questions|n\/a)[[:space:]]*[.]?$/) next
+      if (probe ~ /^\(none/) next
+      found = 1
+      print item
+      exit
+    }
+    END { exit !found }
+  '
+}
+
+
 # Is this state idle-dead — past the idle timeout with nothing to excuse it?
 #
 # Shared by the one GC site so the judgement lives in a single place. Callers
@@ -485,10 +620,38 @@ if [ -f "$INFLIGHT_FILE" ]; then
     # genuinely cannot auto-detect a landed commit, so manual recovery is still
     # required and we must NOT claim auto-resume or "no commit since base"
     # (dual review #11: Codex C2/C3 + code-reviewer P2 — over-promising message).
-    if [ -n "$INFLIGHT_BASE_SHA" ]; then
-      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} has not committed yet (plan mode can block commits, or it stopped early). It auto-resumes the moment a commit lands — exit plan mode and let it finish. If this iteration legitimately produced no commit, run /dual-review-loop:cancel-loop (or rm .claude/dual-review-loop.inflight)."
+    # Ask WHY before saying anything. This gate fires on the marker, but the
+    # marker is a symptom shared by several causes, and the most common one is
+    # not the one the message used to name.
+    #
+    # The injected prompt orders the steps: step 5 says "if ## Open Questions is
+    # non-empty: STOP, do NOT continue", step 8 is the commit, step 9 clears the
+    # marker. So an OBEDIENT model stops at step 5 with the marker still set and
+    # nothing committed — which lands here, on this gate, which sits ahead of
+    # Gate 11. The old message never said "Open Questions", told the user about
+    # plan mode instead, and advised "exit plan mode and let it finish": an
+    # instruction to let an iteration through that was deliberately halted on an
+    # unresolved reviewer disagreement. Following the escape hatch it offered
+    # (rm the marker) then reached Gate 11, which deletes the state file. Wrong
+    # cause, wrong remedy, and stable across fires.
+    #
+    # Forcing a message onto every exit path does not fix this. The message was
+    # bound to the gate that fired rather than to the cause of the stop, and only
+    # ordering fixes that. So: look at the brief first, and let the real cause
+    # speak even though a different gate is doing the talking.
+    GATE7_OQ=""
+    if [ -n "$LAST_BRIEF_PATH" ] && [ -f "$LAST_BRIEF_PATH" ]; then
+      GATE7_OQ=$(oq_first_item < "$LAST_BRIEF_PATH" 2>/dev/null) || GATE7_OQ=""
+      if [ -z "$GATE7_OQ" ]; then
+        GATE7_OQ=$(oq_ambiguous < "$LAST_BRIEF_PATH" 2>/dev/null) || GATE7_OQ=""
+      fi
+    fi
+    if [ -n "$GATE7_OQ" ]; then
+      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} stopped on a reviewer disagreement, not on a commit problem. The brief has an open question and the loop must not decide it for you — $(printf '%s' "$GATE7_OQ" | head -c 160). Brief: ${LAST_BRIEF_PATH:-<none>}. Answer it, then run /dual-review-loop:cancel-loop and start a new loop. Do NOT just clear the marker to make this go away: that lets the loop continue past a disagreement nobody settled."
+    elif [ -n "$INFLIGHT_BASE_SHA" ]; then
+      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} has not committed yet (plan mode can block commits, or it stopped early) and its brief shows no open question. It auto-resumes the moment a commit lands — exit plan mode and let it finish. If this iteration legitimately produced no commit, run /dual-review-loop:cancel-loop (or rm .claude/dual-review-loop.inflight)."
     else
-      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} is in-flight but completion can't be auto-detected (no baseline SHA — legacy state or non-git repo). If the work already committed, rm .claude/dual-review-loop.inflight to resume; otherwise run /dual-review-loop:cancel-loop."
+      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} is in-flight but completion can't be auto-detected (no baseline SHA — legacy state or non-git repo). Its brief shows no open question. If the work already committed, rm .claude/dual-review-loop.inflight to resume; otherwise run /dual-review-loop:cancel-loop."
     fi
     log "in-flight marker present (iter=$INFLIGHT_ITER) — no commit detected; not advancing (base_sha=${INFLIGHT_BASE_SHA:-<none>})"
     # Keep state + marker so the next fire / a debugger can still see it.
@@ -659,66 +822,19 @@ fi
 # `print; exit 0` + `END { exit 1 }` therefore always reports "nothing found" and
 # silently disables this gate. Measured:
 #   awk 'BEGIN{print "x"; exit 0} END{exit 1}' </dev/null; echo $?   -> 1
-oq_first_item() {
-  awk '
-    # Fenced blocks are quoted material, not document structure. A brief that
-    # shows an example Open Questions section inside ``` must not be read as
-    # having one, and a shell comment inside a fence must not end a real section.
-    # Measured: without this, "## Open Questions" followed by a ```bash block
-    # containing "# rebuild the index" skipped the real question underneath it.
-    /^[[:space:]]*```/ { fence = !fence; next }
-    fence { next }
-
-    # The trailing anchor is load-bearing. Dropping it was measured as a net
-    # regression over the real briefs: it starts stopping on
-    # "## Open Questions (unscored)" and "## Open Questions → 해소됨", which are
-    # reviewers using the section for their own notes. That collision is
-    # semantic and no regex resolves it.
-    /^###?[[:space:]]+Open Questions[[:space:]]*$/ { level = length($1); in_oq = 1; next }
-
-    # End on an h2/h3 at the same level or shallower, so a sub-heading nested
-    # inside the section does not close it. An h1 deliberately does NOT close it,
-    # matching the rule this replaces: treating a stray "# note" as a boundary
-    # would skip the question under it, and a skipped disagreement is the one
-    # outcome this gate exists to prevent. Over-stopping is the safe side.
-    /^###?[[:space:]]/ { if (length($1) <= level) in_oq = 0 }
-
-    # Top-level list items only. Matching indented ones re-stops on a note nested
-    # under a placeholder ("- 없음" then "  - but see X").
-    #
-    # "N." and "N)" count. They were excluded until dual review found a real
-    # brief on this machine — a dual-review synthesis written FOR THIS REPO —
-    # whose two blocking decisions sat under numbered bullets and were walked
-    # straight past. The plan prompt further down already teaches the model that
-    # "N. [ ]" is a checkbox marker alongside "- [ ]"; the detector and that
-    # prompt disagreed about what a list item is, in the same file.
-    #
-    # No apostrophes in this awk program. It lives inside single quotes, so one
-    # terminates the string and breaks the whole script — measured, right here.
-    in_oq && /^([-*+]|[0-9]+[.)])[[:space:]]+/ {
-      item = $0
-      sub(/^([-*+]|[0-9]+[.)])[[:space:]]+/, "", item)
-      sub(/[[:space:]]+$/, "", item)
-      probe = tolower(item)
-      if (probe ~ /^[-*+[:space:]]*$/) next                    # a thematic break
-      # Placeholders are not questions. These rules only ever REMOVE stops.
-      if (probe ~ /^(없음|해당[[:space:]]*없음|none|no[[:space:]]+open[[:space:]]+questions|n\/a)[[:space:]]*[.]?$/) next
-      if (probe ~ /^\(none/) next
-      found = 1
-      print item
-      exit
-    }
-    END { exit !found }
-  '
-}
 
 # Gate 11: Open Questions in previous brief?
 # Prefer last_brief_path; fallback to transcript scan.
 OPEN_Q_FOUND=0
 OQ_ITEM=""
+OQ_AMBIG=""
 if [ -n "$LAST_BRIEF_PATH" ] && [ -f "$LAST_BRIEF_PATH" ]; then
   if OQ_ITEM=$(oq_first_item < "$LAST_BRIEF_PATH" 2>/dev/null); then
     OPEN_Q_FOUND=1
+  else
+    # Only when the terminal detector said no. A section it CAN read is its
+    # business; this catches the ones it structurally cannot see.
+    OQ_AMBIG=$(oq_ambiguous < "$LAST_BRIEF_PATH" 2>/dev/null) || OQ_AMBIG=""
   fi
 elif [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
   # Fallback: search last assistant message text for Open Questions heading + non-empty body
@@ -730,6 +846,16 @@ elif [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
       OPEN_Q_FOUND=1
     fi
   fi
+fi
+
+# Ambiguity pauses; it does not terminate. Terminating on a suffixed heading was
+# measured as a net regression (reviewers use the section for their own notes),
+# and that measurement still holds — what changed is that the loop no longer
+# walks past one in silence. State is preserved, so renaming the heading either
+# way resolves it and the loop picks up where it was.
+if [ "$OPEN_Q_FOUND" -eq 0 ] && [ -n "$OQ_AMBIG" ]; then
+  soft_pause "ambiguous Open Questions in brief ($OQ_AMBIG)" \
+    "dual-review-loop paused: the brief has something shaped like an Open Questions section that the loop cannot read as a decision — $(printf '%s' "$OQ_AMBIG" | head -c 160). The loop stops rather than guess, because this section is how a reviewer disagreement reaches you. If it IS a decision you need to make, rename the heading to exactly '## Open Questions' and put each item on its own top-level bullet. If it is a reviewer's own notes, rename it to anything else. Brief: ${LAST_BRIEF_PATH:-<none>}. Its state is preserved; /dual-review-loop:cancel-loop stops the loop instead."
 fi
 
 if [ "$OPEN_Q_FOUND" -eq 1 ]; then
