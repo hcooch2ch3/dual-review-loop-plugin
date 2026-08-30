@@ -109,12 +109,22 @@ cleanup_and_approve() {
   DECISION_EMITTED=1
   rm -f "$STATE_FILE" "$INFLIGHT_FILE" 2>/dev/null
   release_lock
-  if [ "$#" -ge 2 ] && [ -n "$2" ]; then
-    jq -n --arg m "$2" '{"decision":"approve","systemMessage":$m}' 2>/dev/null \
-      || printf '{"decision":"approve"}\n'
-  else
-    printf '{"decision":"approve"}\n'
+  # Enforced here rather than at the call sites. A lint that reads the call sites
+  # cannot see an argument that is empty after expansion, and every terminal path
+  # added later would have to remember to be checked. This way a silent one is
+  # impossible by construction and leaves a BUG line naming itself.
+  #
+  # ${2:-} and not "$2": this script runs under `set -u`, so expanding an absent
+  # $2 aborts the shell — and DECISION_EMITTED is already 1 by then, so the EXIT
+  # trap suppresses its own fail-open and stdout comes out EMPTY. That is worse
+  # than the silence this is meant to remove.
+  local msg="${2:-}"
+  if [ -z "$msg" ]; then
+    log "BUG: terminal path with no user message — using a generic one: $1"
+    msg="dual-review-loop ended and cleared its state ($1). Nothing you committed was touched — only the plugin's own state file and marker. Start a new loop to continue."
   fi
+  jq -n --arg m "$msg" '{"decision":"approve","systemMessage":$m}' 2>/dev/null \
+    || printf '{"decision":"approve"}\n'
   exit 0
 }
 
@@ -173,7 +183,17 @@ fail_open() {
   DECISION_EMITTED=1
   rm -f "$STATE_FILE" "$INFLIGHT_FILE" 2>/dev/null
   release_lock
-  printf '{"decision":"approve"}\n'
+  # Same rule as cleanup_and_approve, and these are the error exits — corrupt
+  # state, an unreadable plan, a failed atomic write — so the user has even less
+  # chance of guessing what happened. Thirteen call sites reached this with no
+  # message at all.
+  #
+  # One of them cannot be helped: the gate that fires when jq is missing builds
+  # its message with jq. That path falls through to the bare printf below, which
+  # is why the printf stays rather than being replaced. tests/jq-missing.test.sh
+  # pins that it still emits valid, non-empty JSON.
+  jq -n --arg r "$1" '{"decision":"approve","systemMessage":("dual-review-loop stopped on an error it cannot recover from (" + $r + "). Its state file and marker were cleared; nothing you committed was touched. Fix the cause and start a new loop.")}' 2>/dev/null \
+    || printf '{"decision":"approve"}\n'
   exit 0
 }
 
@@ -303,7 +323,8 @@ BAD_NUMERIC=$(jq -r '
 [ -z "$BAD_NUMERIC" ] || fail_open "non-numeric value in numeric state field(s): $BAD_NUMERIC"
 
 # Gate 3: active
-[ "$ACTIVE" = "true" ] || cleanup_and_approve "state.active != true"
+[ "$ACTIVE" = "true" ] || cleanup_and_approve "state.active != true" \
+  "dual-review-loop: the loop was already marked inactive, so its state was cleared. Nothing you committed was touched."
 
 # Gate 6 (idle GC): runs HERE, ahead of the defensive gates, not after them.
 #
@@ -334,7 +355,8 @@ fi
 SESSION_ID_HOOK=$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // ""' 2>/dev/null)
 [ -n "$SESSION_ID_STATE" ] || fail_open "state.session_id empty"
 if [ -n "$SESSION_ID_HOOK" ] && [ "$SESSION_ID_HOOK" != "$SESSION_ID_STATE" ]; then
-  soft_pause "different session ($SESSION_ID_HOOK != $SESSION_ID_STATE)"
+  soft_pause "different session ($SESSION_ID_HOOK != $SESSION_ID_STATE)" \
+    "dual-review-loop: this loop belongs to a different Claude Code session, so this turn did not advance it. Its state is untouched. Resume it from the session that started it, or run /dual-review-loop:cancel-loop to clear it."
 fi
 
 # Gate 5: same-session phantom defense
@@ -372,7 +394,8 @@ if [ "$LAST_INJECTED_ITER" -gt 0 ]; then
     fi
   fi
   if [ "$CONTINUATION" -eq 0 ]; then
-    soft_pause "no continuation signal (last_injected_iter=$LAST_INJECTED_ITER, gap=${GAP:-?}s) — user likely took control"
+    soft_pause "no continuation signal (last_injected_iter=$LAST_INJECTED_ITER, gap=${GAP:-?}s) — user likely took control" \
+      "dual-review-loop: the loop did not advance because this turn does not look like a continuation of iteration $LAST_INJECTED_ITER — you likely took over manually. The state is preserved; it picks up again on a turn that follows its instructions, or run /dual-review-loop:cancel-loop to stop it."
   fi
 fi
 
@@ -476,7 +499,8 @@ case "$MODE" in
             "dual-review-loop: every task in the plan is complete, but the working tree still has uncommitted changes, so the loop did not declare completion. Commit or stash them and the loop finishes on the next turn. If the changes are plugin artifacts, add .claude/dual-review-loop.*, .claude/dual-review-loop/ and .claude/reviews/ to .gitignore."
         fi
       fi
-      cleanup_and_approve "all tasks complete after $ITERATION iterations"
+      cleanup_and_approve "all tasks complete after $ITERATION iterations" \
+        "dual-review-loop: every task in the plan is checked off — the loop finished after $ITERATION iteration(s). The review briefs are in .claude/reviews/."
     fi
     ;;
   task)
@@ -501,7 +525,8 @@ esac
 
 # Gate 10: max_iterations
 if [ "$MAX_ITERATIONS" -gt 0 ] && [ "$ITERATION" -ge "$MAX_ITERATIONS" ]; then
-  cleanup_and_approve "max_iterations reached ($ITERATION >= $MAX_ITERATIONS)"
+  cleanup_and_approve "max_iterations reached ($ITERATION >= $MAX_ITERATIONS)" \
+    "dual-review-loop: stopped at the iteration cap ($ITERATION of $MAX_ITERATIONS), with tasks still unfinished in the plan. Start a new loop with a higher --max-iters to continue."
 fi
 
 # Gate 10b: max_minutes (wall-clock cap since started_at_epoch)
@@ -509,7 +534,8 @@ if [ "$MAX_MINUTES" -gt 0 ] && [ "$STARTED_AT" -gt 0 ]; then
   ELAPSED_SEC=$(( NOW_EPOCH - STARTED_AT ))
   CAP_SEC=$(( MAX_MINUTES * 60 ))
   if [ "$ELAPSED_SEC" -ge "$CAP_SEC" ]; then
-    cleanup_and_approve "max_minutes reached (${ELAPSED_SEC}s >= ${CAP_SEC}s / ${MAX_MINUTES}min cap)"
+    cleanup_and_approve "max_minutes reached (${ELAPSED_SEC}s >= ${CAP_SEC}s / ${MAX_MINUTES}min cap)" \
+      "dual-review-loop: stopped at the wall-clock cap (${MAX_MINUTES} min). This measures elapsed time, not work done — the clock runs while the loop waits for you. Start a new loop to continue."
   fi
 fi
 
@@ -559,13 +585,16 @@ if [ "$CUM_REVIEWS" -lt 0 ]; then
 fi
 
 if [ "$CUM_FILES" -ge "$MAX_FILES" ]; then
-  cleanup_and_approve "max_files reached ($CUM_FILES >= $MAX_FILES)"
+  cleanup_and_approve "max_files reached ($CUM_FILES >= $MAX_FILES)" \
+    "dual-review-loop: stopped after touching $CUM_FILES files (cap $MAX_FILES). Review what landed, then start a new loop if that was expected."
 fi
 if [ "$CUM_LOC" -ge "$MAX_LOC" ]; then
-  cleanup_and_approve "max_loc reached ($CUM_LOC >= $MAX_LOC)"
+  cleanup_and_approve "max_loc reached ($CUM_LOC >= $MAX_LOC)" \
+    "dual-review-loop: stopped after changing $CUM_LOC lines (cap $MAX_LOC). Review what landed, then start a new loop if that was expected."
 fi
 if [ "$CUM_REVIEWS" -ge "$MAX_REVIEWS" ]; then
-  cleanup_and_approve "max_reviews reached ($CUM_REVIEWS >= $MAX_REVIEWS)"
+  cleanup_and_approve "max_reviews reached ($CUM_REVIEWS >= $MAX_REVIEWS)" \
+    "dual-review-loop: stopped after $CUM_REVIEWS dual-review runs (cap $MAX_REVIEWS). Start a new loop to continue."
 fi
 # (consecutive_same_failure gate removed in dual review #8 — fingerprint
 # was undefined across iters; max_iterations is the hard stop on stuck verify.)

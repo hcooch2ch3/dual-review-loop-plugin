@@ -39,25 +39,33 @@
 #                           rather than a boundary — measured as a skipped
 #                           question before the fence rule existed.
 #                           tests/gate11-openq.test.sh pins all of it.
-#   gate01-bad-json         now: state=N — a merely CORRUPT file (killed
-#                           editor save, disk-full) is deleted, discarding
-#                           a recoverable iteration count and baseline SHA
-#   gate03-inactive         now: fine. Becomes a defect if a pause ever
-#                           sets active=false — this row is then the
-#                           silent-deletion path on the next fire.
-#   gate10b-max-minutes     now: state=N — the wall-clock cap deletes
-#                           state rather than pausing it
-#   gate10-max-iterations   now: state=N — same class as gate10b. If a fix
-#                           converts cap-termination to a pause, expect TWO
-#                           diffs here, not one.
+#   gate01-bad-json         PARTLY FIXED (A-1) — fail_open now explains
+#                           itself instead of ending the turn in silence.
+#                           Deleting a merely CORRUPT file (killed editor
+#                           save, disk-full) is STILL the defect: it discards
+#                           a recoverable iteration count and baseline SHA.
+#                           Note this row moves via fail_open, which has 13
+#                           call sites — not via cleanup_and_approve.
+#   gate03-inactive         FIXED (A-1) — carries a message. It was the
+#                           silent-deletion path a pause setting
+#                           active=false would land on; it now explains
+#                           itself if that ever happens.
+#   gate10b-max-minutes     PARTLY FIXED (A-1) — the cap now names itself
+#                           and says how to continue. state=N is UNCHANGED
+#                           and still the defect: the cap DELETES state
+#                           rather than pausing it. That second diff belongs
+#                           to Release C, not here.
+#   gate10-max-iterations   PARTLY FIXED (A-1) — same class as gate10b, same
+#                           half done. Expect the deletion diff at C.
 #   gate06-idle-timeout     now: state=N and an EMPTY systemMessage — 24h of
 #                           idleness deletes the loop silently. This is the
 #                           exact hazard midflight M5 guards against, frozen
 #                           here as if acceptable.
-#   gate08-plan-relative    now: state=N — a recoverable CONFIGURATION error
-#                           destroys state, same class as gate01. (A plan
-#                           path that is absolute but missing takes the same
-#                           fail_open branch and has no row at all.)
+#   gate08-plan-relative    PARTLY FIXED (A-1) — carries a message now, via
+#                           fail_open. A recoverable CONFIGURATION error
+#                           still DESTROYS state, same class as gate01. (A
+#                           plan path that is absolute but missing takes the
+#                           same branch and has no row at all.)
 #   gate06b-stale-crosssession  FIXED (B-1) — no longer a frozen defect.
 #                           A state both past the idle timeout AND owned by a
 #                           vanished session used to be PRESERVED, because
@@ -109,17 +117,20 @@
 #                           repaired behaviour: SOFT-PAUSE, state=Y
 #                           active=true. Reverting to state=N here means
 #                           the repo-scope fix regressed.
-#   gate04-session-mismatch now: active=true after a CROSS-SESSION pause and
-#                           an EMPTY systemMessage, so the state stays armed
-#                           and the user sees a turn end with no explanation.
-#                           This is the field baseline's single most frequent
-#                           event (214 fires / 58%).
-#                           after a fix: active=false, non-empty message.
-#   gate05-no-continuation  now: same shape as gate04, but this is a
-#                           SAME-session pause — the user may well intend to
-#                           resume. Do NOT fold it in with gate04: disarming
-#                           it would kill a loop its owner still wants.
-#                           after a fix: message only; active stays true.
+#   gate04-session-mismatch PARTLY FIXED (A-1) — the pause now names the
+#                           other session and how to resume. This was the
+#                           field baseline's single most frequent event
+#                           (214 fires / 58%) and it said nothing.
+#                           active=true is UNCHANGED. The prescribed fix
+#                           (active=false) is DEFERRED to Release C with the
+#                           resume path, not withdrawn — disarming without a
+#                           way back is a worse trade than the noise.
+#   gate05-no-continuation  FIXED (A-1) — message added, active stays true,
+#                           which is exactly what this row asked for. Do NOT
+#                           fold it in with gate04: disarming a SAME-session
+#                           pause would kill a loop its owner still wants.
+#                           gate05b-grace-outside moves with it — same call
+#                           site, and it is easy to leave out of a count.
 #   gate12-lock-contention  lock=Y — a non-owner must never rmdir. If this
 #                           returns to lock=N, ownership tracking regressed.
 #   gate12-lock-orphan-reclaimed  decision=block — the loop ADVANCES. A lock
@@ -163,13 +174,13 @@
 # Regenerate: bash tests/gate-matrix.test.sh --update
 advance-inject             | block   | state=Y active=true  marker=Y(2) lock=N iter=2/2 | sentinel="[dual-review-loop iter 2/20]" enforce=1 | dual-review-loop plan iter 2/20 | iter 2 → injecting (brief target: <TMP>/.claude/reviews/iter-002.md)
 gate00-no-state            | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | 
-gate01-bad-json            | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | FAIL-OPEN: state file is not valid JSON
+gate01-bad-json            | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop stopped on an error it cannot recover from (state file is not valid JSON). Its state file and marker were cleared; nothing you committed was touched. Fix the cause and start a new loop. | FAIL-OPEN: state file is not valid JSON
 gate02-schema-unknown      | approve | state=Y active=true  marker=N(-) lock=N iter=1/0 | - | dual-review-loop paused: state schema 'v9' unknown. To resume: install a hook supporting this schema, OR run /dual-review-loop:cancel-loop (or rm <TMP>/.claude/dual-review-loop.state.json) to start over. | SOFT-PAUSE: schema mismatch (got=v9 expected one of: v1 v2) — state preserved; downgrade hook or cancel manually (state preserved)
-gate03-inactive            | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | state.active != true
-gate04-session-mismatch    | approve | state=Y active=true  marker=N(-) lock=N iter=1/0 | - |  | SOFT-PAUSE: different session (test-session != other-session) (state preserved)
-gate05-no-continuation     | approve | state=Y active=true  marker=N(-) lock=N iter=1/1 | - |  | SOFT-PAUSE: no continuation signal (last_injected_iter=1, gap=<N>s) — user likely took control (state preserved)
+gate03-inactive            | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop: the loop was already marked inactive, so its state was cleared. Nothing you committed was touched. | state.active != true
+gate04-session-mismatch    | approve | state=Y active=true  marker=N(-) lock=N iter=1/0 | - | dual-review-loop: this loop belongs to a different Claude Code session, so this turn did not advance it. Its state is untouched. Resume it from the session that started it, or run /dual-review-loop:cancel-loop to clear it. | SOFT-PAUSE: different session (test-session != other-session) (state preserved)
+gate05-no-continuation     | approve | state=Y active=true  marker=N(-) lock=N iter=1/1 | - | dual-review-loop: the loop did not advance because this turn does not look like a continuation of iteration 1 — you likely took over manually. The state is preserved; it picks up again on a turn that follows its instructions, or run /dual-review-loop:cancel-loop to stop it. | SOFT-PAUSE: no continuation signal (last_injected_iter=1, gap=<N>s) — user likely took control (state preserved)
 gate05a-grace-inside       | block   | state=Y active=true  marker=Y(2) lock=N iter=2/2 | sentinel="[dual-review-loop iter 2/20]" enforce=1 | dual-review-loop plan iter 2/20 | iter 2 → injecting (brief target: <TMP>/.claude/reviews/iter-002.md)
-gate05b-grace-outside      | approve | state=Y active=true  marker=N(-) lock=N iter=1/1 | - |  | SOFT-PAUSE: no continuation signal (last_injected_iter=1, gap=<N>s) — user likely took control (state preserved)
+gate05b-grace-outside      | approve | state=Y active=true  marker=N(-) lock=N iter=1/1 | - | dual-review-loop: the loop did not advance because this turn does not look like a continuation of iteration 1 — you likely took over manually. The state is preserved; it picks up again on a turn that follows its instructions, or run /dual-review-loop:cancel-loop to stop it. | SOFT-PAUSE: no continuation signal (last_injected_iter=1, gap=<N>s) — user likely took control (state preserved)
 gate06-idle-timeout        | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop: this loop had no activity for over 24h, so its state was collected and the loop has ended. Nothing you committed was touched — only the plugin's own state file and marker. To pick the work back up, start a new loop on the same plan. | idle timeout (>86400s)
 gate06b-stale-crosssession | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop: this loop had no activity for over 24h, so its state was collected and the loop has ended. Nothing you committed was touched — only the plugin's own state file and marker. To pick the work back up, start a new loop on the same plan. | idle timeout (>86400s)
 gate06c-marker-inside-lease | approve | state=Y active=true  marker=Y(1) lock=N iter=1/0 | - | dual-review-loop: iter 1 has not committed yet (plan mode can block commits, or it stopped early). It auto-resumes the moment a commit lands — exit plan mode and let it finish. If this iteration legitimately produced no commit, run /dual-review-loop:cancel-loop (or rm .claude/dual-review-loop.inflight). | in-flight marker present (iter=1) — no commit detected; not advancing (base_sha=<SHA>)
@@ -177,12 +188,12 @@ gate06d-marker-outside-lease | approve | state=N active=-     marker=N(-) lock=N
 gate06e-stale-same-session | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop: this loop had no activity for over 24h, so its state was collected and the loop has ended. Nothing you committed was touched — only the plugin's own state file and marker. To pick the work back up, start a new loop on the same plan. | idle timeout (>86400s)
 gate06f-marker-future-dated | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop: this loop had no activity for over 24h, so its state was collected and the loop has ended. Nothing you committed was touched — only the plugin's own state file and marker. To pick the work back up, start a new loop on the same plan. | idle timeout (>86400s)
 gate07-inflight-nocommit   | approve | state=Y active=true  marker=Y(1) lock=N iter=1/0 | - | dual-review-loop: iter 1 has not committed yet (plan mode can block commits, or it stopped early). It auto-resumes the moment a commit lands — exit plan mode and let it finish. If this iteration legitimately produced no commit, run /dual-review-loop:cancel-loop (or rm .claude/dual-review-loop.inflight). | in-flight marker present (iter=1) — no commit detected; not advancing (base_sha=<SHA>)
-gate08-plan-relative       | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | FAIL-OPEN: plan_path not absolute: relative/plan.md
-gate09a-all-complete       | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | all tasks complete after 1 iterations
+gate08-plan-relative       | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop stopped on an error it cannot recover from (plan_path not absolute: relative/plan.md). Its state file and marker were cleared; nothing you committed was touched. Fix the cause and start a new loop. | FAIL-OPEN: plan_path not absolute: relative/plan.md
+gate09a-all-complete       | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop: every task in the plan is checked off — the loop finished after 1 iteration(s). The review briefs are in .claude/reviews/. | all tasks complete after 1 iterations
 gate09b-dirty-blocks       | approve | state=Y active=true  marker=N(-) lock=N iter=1/0 | - | dual-review-loop: every task in the plan is complete, but the working tree still has uncommitted changes, so the loop did not declare completion. Commit or stash them and the loop finishes on the next turn. If the changes are plugin artifacts, add .claude/dual-review-loop.*, .claude/dual-review-loop/ and .claude/reviews/ to .gitignore. | SOFT-PAUSE: no unfinished tasks but uncommitted changes present (state preserved)
 gate09c-plan-outside-repo  | approve | state=Y active=true  marker=N(-) lock=N iter=1/0 | - | dual-review-loop: every task in the plan is complete, but the working tree still has uncommitted changes, so the loop did not declare completion. Commit or stash them and the loop finishes on the next turn. If the changes are plugin artifacts, add .claude/dual-review-loop.*, .claude/dual-review-loop/ and .claude/reviews/ to .gitignore. | SOFT-PAUSE: no unfinished tasks but uncommitted changes present (state preserved)
-gate10-max-iterations      | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | max_iterations reached (20 >= 20)
-gate10b-max-minutes        | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | max_minutes reached (<N>s >= 60s / 1min cap)
+gate10-max-iterations      | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop: stopped at the iteration cap (20 of 20), with tasks still unfinished in the plan. Start a new loop with a higher --max-iters to continue. | max_iterations reached (20 >= 20)
+gate10b-max-minutes        | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop: stopped at the wall-clock cap (1 min). This measures elapsed time, not work done — the clock runs while the loop waits for you. Start a new loop to continue. | max_minutes reached (<N>s >= 60s / 1min cap)
 gate11-open-questions      | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop: stopped because the review brief has a question that needs your decision. Brief: <TMP>/.claude/reviews/iter-001.md. First item: a real question. Note this section means the two REVIEWERS DISAGREED — a reviewer's own follow-up notes belong under a different heading. Answer it, then start a new loop. | Open Questions detected in last brief — user decision needed
 gate11n1-none-bullet       | block   | state=Y active=true  marker=Y(2) lock=N iter=2/2 | sentinel="[dual-review-loop iter 2/20]" enforce=1 | dual-review-loop plan iter 2/20 | iter 2 → injecting (brief target: <TMP>/.claude/reviews/iter-002.md)
 gate11n2-h3-heading        | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop: stopped because the review brief has a question that needs your decision. Brief: <TMP>/.claude/reviews/iter-001.md. First item: **Q1 — a real question**. Note this section means the two REVIEWERS DISAGREED — a reviewer's own follow-up notes belong under a different heading. Answer it, then start a new loop. | Open Questions detected in last brief — user decision needed
