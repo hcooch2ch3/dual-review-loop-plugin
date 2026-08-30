@@ -608,6 +608,33 @@ ITER_PADDED=$(printf '%03d' "$NEXT_ITER")
 NEXT_BRIEF_PATH="${REVIEWS_DIR}/iter-${ITER_PADDED}.md"
 mkdir -p "$REVIEWS_DIR" 2>/dev/null
 
+# `iteration` is hand-seeded (see the state template in commands/), so it can be
+# rewound — re-seeding after a terminal gate sets it back to 0 and this path is
+# computed a second time. The injected prompt tells the model to save the brief
+# there verbatim, so a collision is silent data loss: the previous iteration's
+# evidence is overwritten and nothing reports it.
+#
+# Skip to the first free name instead. The bound is relative to where we started,
+# so the refusal below can state the range it actually probed rather than a
+# hard-coded one it never checked.
+BRIEF_PROBE=$NEXT_ITER
+BRIEF_LIMIT=$((NEXT_ITER + 999))
+while [ -e "$NEXT_BRIEF_PATH" ] && [ "$BRIEF_PROBE" -lt "$BRIEF_LIMIT" ]; do
+  BRIEF_PROBE=$((BRIEF_PROBE + 1))
+  ITER_PADDED=$(printf '%03d' "$BRIEF_PROBE")
+  NEXT_BRIEF_PATH="${REVIEWS_DIR}/iter-${ITER_PADDED}.md"
+done
+if [ -e "$NEXT_BRIEF_PATH" ]; then
+  # Recoverable: the user archives or deletes one file and the next turn proceeds.
+  # soft_pause therefore, not a terminal path — losing the iteration counter and
+  # the baselines over a full directory would be a worse outcome than the pause.
+  soft_pause "brief path exhausted: iter-$(printf '%03d' "$NEXT_ITER") through iter-${ITER_PADDED} all exist" \
+    "dual-review-loop paused: every brief filename from iter-$(printf '%03d' "$NEXT_ITER").md to iter-${ITER_PADDED}.md is already taken in $REVIEWS_DIR, so there is no free name for the next one. Archive or delete some and the loop continues on the next turn."
+fi
+if [ "$BRIEF_PROBE" -ne "$NEXT_ITER" ]; then
+  log "brief path collision: iter-$(printf '%03d' "$NEXT_ITER").md exists — using iter-${ITER_PADDED}.md"
+fi
+
 # HEAD at the moment we inject iter NEXT_ITER (before the LLM does any work).
 # Gate 7 on the NEXT fire compares HEAD against this to detect whether the
 # iter's commit landed — hook-owned completion signal, no LLM-`rm` dependence.

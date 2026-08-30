@@ -437,6 +437,22 @@ t=$(setup_repo g11n3); b=$(brief "$t" '## Open Questions' '* **Q1 — a real que
 write_state "$(base_state "$t" | jq --arg b "$b" '.last_brief_path=$b')" "$t"
 observe "gate11n3-star-bullet" "$t"
 
+# Gate 13 — the computed brief path is already occupied.
+#
+# `iteration` lives in a hand-seeded state file, so it can be rewound: re-seeding
+# after a terminal gate sets it back to 0 and iter-001.md gets targeted a second
+# time. The injected prompt says "Save it verbatim to <path>", so an executor
+# following it destroys the earlier brief. Observed in the field — two
+# "iter 1 → injecting" log lines an hour apart, both naming iter-001.md.
+#
+# The observable is the path in the log tail. The collision warning is logged
+# too, but `observe` keeps only the last line and the warning precedes the
+# injection line.
+t=$(setup_repo g13 gitignore); mkdir -p "$t/.claude/reviews"
+printf '# an earlier brief that must survive\n' > "$t/.claude/reviews/iter-001.md"
+write_state "$(base_state "$t" | jq '.iteration=0')" "$t"
+observe "gate13-brief-path-collision" "$t"
+
 # Gate 12 — TWO distinct cases the single old row conflated.
 #
 # The old fixture pre-created a bare lock dir and called it "contention", but a
@@ -613,6 +629,17 @@ if [ "$UPDATE" -eq 1 ] || [ "$MISSING_GOLDEN" -eq 1 ]; then
     echo "#                           of them legitimately acquire the lock and would"
     echo "#                           then leak it. Those five reading lock=N is what"
     echo "#                           proves owner paths still release rather than leak."
+    echo "#   gate13-brief-path-collision  the brief number is derived from a"
+    echo "#                           hand-seeded counter, so it can be rewound and name"
+    echo "#                           a file that already holds the previous iteration's"
+    echo "#                           evidence. The injected prompt says to write there"
+    echo "#                           verbatim, so a collision is silent data loss. Pins"
+    echo "#                           the skip to the first free name: if the log tail"
+    echo "#                           names iter-001 again, the overwrite is back."
+    echo "#                           Not covered here: the exhausted-window refusal"
+    echo "#                           (soft_pause, state preserved) and the >999"
+    echo "#                           boundary — both need a directory the matrix does"
+    echo "#                           not build, and are driven directly instead."
     echo "#"
     echo "# Do not read this file as a specification. A diff here is a question"
     echo "# (\"did I mean to change this?\"), not automatically a failure. Regenerating"

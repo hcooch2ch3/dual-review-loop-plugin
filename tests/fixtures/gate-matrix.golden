@@ -128,6 +128,17 @@
 #                           of them legitimately acquire the lock and would
 #                           then leak it. Those five reading lock=N is what
 #                           proves owner paths still release rather than leak.
+#   gate13-brief-path-collision  the brief number is derived from a
+#                           hand-seeded counter, so it can be rewound and name
+#                           a file that already holds the previous iteration's
+#                           evidence. The injected prompt says to write there
+#                           verbatim, so a collision is silent data loss. Pins
+#                           the skip to the first free name: if the log tail
+#                           names iter-001 again, the overwrite is back.
+#                           Not covered here: the exhausted-window refusal
+#                           (soft_pause, state preserved) and the >999
+#                           boundary — both need a directory the matrix does
+#                           not build, and are driven directly instead.
 #
 # Do not read this file as a specification. A diff here is a question
 # ("did I mean to change this?"), not automatically a failure. Regenerating
@@ -166,3 +177,4 @@ gate11n2-h3-heading        | block   | state=Y active=true  marker=Y(2) lock=N i
 gate11n3-star-bullet       | block   | state=Y active=true  marker=Y(2) lock=N iter=2/2 | sentinel="[dual-review-loop iter 2/20]" enforce=1 | dual-review-loop plan iter 2/20 | iter 2 → injecting (brief target: <TMP>/.claude/reviews/iter-002.md)
 gate12-lock-contention     | approve | state=Y active=true  marker=N(-) lock=Y iter=1/0 | - | dual-review-loop: another hook instance holds the lock, so this turn did not advance. A lock with no live holder is reclaimed automatically after 10 minutes. To clear it now: rmdir <TMP>/.claude/dual-review-loop.lock | SOFT-PAUSE: lock contention (state preserved)
 gate12-lock-orphan-reclaimed | block   | state=Y active=true  marker=Y(2) lock=N iter=2/2 | sentinel="[dual-review-loop iter 2/20]" enforce=1 | dual-review-loop plan iter 2/20 | iter 2 → injecting (brief target: <TMP>/.claude/reviews/iter-002.md)
+gate13-brief-path-collision | block   | state=Y active=true  marker=Y(1) lock=N iter=1/1 | sentinel="[dual-review-loop iter 1/20]" enforce=1 | dual-review-loop plan iter 1/20 | iter 1 → injecting (brief target: <TMP>/.claude/reviews/iter-002.md)
