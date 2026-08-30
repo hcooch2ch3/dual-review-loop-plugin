@@ -683,11 +683,21 @@ oq_first_item() {
     # outcome this gate exists to prevent. Over-stopping is the safe side.
     /^###?[[:space:]]/ { if (length($1) <= level) in_oq = 0 }
 
-    # Top-level bullets only. Matching indented ones re-stops on a note nested
+    # Top-level list items only. Matching indented ones re-stops on a note nested
     # under a placeholder ("- 없음" then "  - but see X").
-    in_oq && /^[-*+][[:space:]]+/ {
+    #
+    # "N." and "N)" count. They were excluded until dual review found a real
+    # brief on this machine — a dual-review synthesis written FOR THIS REPO —
+    # whose two blocking decisions sat under numbered bullets and were walked
+    # straight past. The plan prompt further down already teaches the model that
+    # "N. [ ]" is a checkbox marker alongside "- [ ]"; the detector and that
+    # prompt disagreed about what a list item is, in the same file.
+    #
+    # No apostrophes in this awk program. It lives inside single quotes, so one
+    # terminates the string and breaks the whole script — measured, right here.
+    in_oq && /^([-*+]|[0-9]+[.)])[[:space:]]+/ {
       item = $0
-      sub(/^[-*+][[:space:]]+/, "", item)
+      sub(/^([-*+]|[0-9]+[.)])[[:space:]]+/, "", item)
       sub(/[[:space:]]+$/, "", item)
       probe = tolower(item)
       if (probe ~ /^[-*+[:space:]]*$/) next                    # a thematic break

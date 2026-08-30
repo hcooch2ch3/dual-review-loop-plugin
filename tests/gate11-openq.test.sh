@@ -19,15 +19,29 @@ command -v oq_first_item >/dev/null 2>&1 \
   || { echo "FATAL: could not extract oq_first_item from the hook — this suite is guarding nothing"; exit 2; }
 
 fail=0
-t() {  # $1=label  $2=body  $3=expect STOP|ADVANCE
-  local got
-  if printf '%b' "$2" | oq_first_item >/dev/null 2>&1; then got=STOP; else got=ADVANCE; fi
-  if [ "$got" = "$3" ]; then
-    printf '  ✓ %-20s %s\n' "$1" "$got"
-  else
+cases=0
+# $4 is optional and pins the ITEM the detector prints, not just whether it
+# stopped. Without it this harness checked the exit status alone: deleting the
+# trailing-whitespace strip at the end of the awk program left all 28 cases green
+# while the printed item became "which schema wins?\r" — measured. That string is
+# what the user reads in the systemMessage ("First item: ..."), so an unstripped
+# \r lands in their terminal. Pin the item wherever the case exists to guard the
+# item, not merely the polarity.
+t() {  # $1=label  $2=body  $3=expect STOP|ADVANCE  [$4=expected item]
+  local got out
+  cases=$((cases+1))
+  if out=$(printf '%b' "$2" | oq_first_item 2>/dev/null); then got=STOP; else got=ADVANCE; out=""; fi
+  if [ "$got" != "$3" ]; then
     printf '  ✗ %-20s got=%s want=%s\n' "$1" "$got" "$3"
     fail=1
+    return
   fi
+  if [ -n "${4:-}" ] && [ "$out" != "$4" ]; then
+    printf '  ✗ %-20s item=[%s] want=[%s]\n' "$1" "$out" "$4"
+    fail=1
+    return
+  fi
+  printf '  ✓ %-20s %s\n' "$1" "$got"
 }
 
 echo "== Gate 11 classifier =="
@@ -65,17 +79,28 @@ t fenced-hash     '## Open Questions\n\n```bash\n# rebuild the index\n```\n\n- a
 t quoted-heading  '## Findings\n\n```markdown\n### Open Questions\n- an example\n```\n\n- fine\n' ADVANCE
 t fenced-bullet   '## Open Questions\n\n```\n- an example bullet\n```\n'   ADVANCE
 
+echo "-- numbered items are items (the hook's own prompt says so) --"
+# Found by dual review in a REAL brief on this machine — a dual-review synthesis
+# written FOR THIS REPO, holding two genuine blocking decisions under numbered
+# bullets. The detector walked straight past it. The hook's plan prompt already
+# tells the model that "N. [ ]" counts as a checkbox alongside "- [ ]", so the
+# detector and the prompt in the same file disagreed about what a list item is.
+t numbered        '## Open Questions\n1. a real question\n'               STOP 'a real question'
+t numbered-paren  '## Open Questions\n1) a real question\n'               STOP 'a real question'
+t numbered-multi  '## Open Questions\n1. first\n2. second\n'              STOP 'first'
+t numbered-ph     '## Open Questions\n1. 없음\n'                          ADVANCE
+t numbered-after-ph '## Open Questions\n- 없음\n2. a real question\n'     STOP 'a real question'
+# Indented ones stay excluded, same as bulleted: a note nested under a
+# placeholder is not a new question.
+t numbered-indent '## Open Questions\n- 없음\n  1. but see X\n'           ADVANCE
+
 echo "-- input shapes --"
 t no-trailing-nl  '## Open Questions\n- a real question'                   STOP
 t link-bullet     '## Open Questions\n- [see here](http://x)\n'            STOP
 t degraded        '## Open Questions\n- [DEGRADED] recovery failed\n'      STOP
-printf '## Open Questions\r\n- a real question\r\n' > "${TMPDIR:-/tmp}/drl-crlf.$$"
-if oq_first_item < "${TMPDIR:-/tmp}/drl-crlf.$$" >/dev/null 2>&1; then
-  printf '  ✓ %-20s %s\n' "crlf" "STOP"
-else
-  printf '  ✗ %-20s got=ADVANCE want=STOP\n' "crlf"; fail=1
-fi
-rm -f "${TMPDIR:-/tmp}/drl-crlf.$$"
+t crlf            '## Open Questions\r\n- a real question\r\n'          STOP 'a real question'
+t item-is-stripped '## Open Questions\n-    padded question   \n'        STOP 'padded question'
+t item-keeps-bold '## Open Questions\n- **A인가 B인가.** 결정 필요\n'      STOP '**A인가 B인가.** 결정 필요' 
 
 # An h1 does NOT close the section, so a bullet under a later h1 still counts.
 # Over-stopping, deliberately: it matches the rule this replaced, and a spurious
@@ -85,7 +110,7 @@ t h1-does-not-end '## Open Questions\n- 없음\n# New Section\n- not a question\
 
 echo ""
 if [ "$fail" -eq 0 ]; then
-  echo "== gate11 classifier: 28 cases passed =="
+  echo "== gate11 classifier: $cases cases passed =="
 else
   echo "== gate11 classifier: FAILED =="
 fi
