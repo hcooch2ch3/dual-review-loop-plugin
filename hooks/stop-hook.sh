@@ -136,12 +136,23 @@ soft_pause() {
   log "SOFT-PAUSE: $1 (state preserved)"
   DECISION_EMITTED=1
   release_lock
-  if [ "$#" -ge 2 ] && [ -n "$2" ]; then
-    jq -n --arg m "$2" '{"decision":"approve","systemMessage":$m}' 2>/dev/null \
-      || printf '{"decision":"approve"}\n'
-  else
-    printf '{"decision":"approve"}\n'
+  # Same enforcement as cleanup_and_approve, and for a sharper reason. The two
+  # DELETING helpers made silence structurally impossible while this one — the
+  # helper that PRESERVES state — took a bare-approve branch. That inverted the
+  # risk: a silent soft-pause leaves an ACTIVE loop that looks frozen, which is
+  # the exact symptom this work exists to remove, and unlike its two siblings it
+  # left no BUG line naming itself. The call sites that grow are this one's.
+  #
+  # ${2:-} and not "$2": under `set -u` an absent $2 aborts the shell, and
+  # DECISION_EMITTED is already 1 by then, so the EXIT trap suppresses its own
+  # fail-open and stdout comes out EMPTY.
+  local msg="${2:-}"
+  if [ -z "$msg" ]; then
+    log "BUG: soft-pause with no user message — using a generic one: $1"
+    msg="dual-review-loop paused this turn without advancing ($1). Its state is preserved, so it can pick up again; run /dual-review-loop:cancel-loop to stop it for good."
   fi
+  jq -n --arg m "$msg" '{"decision":"approve","systemMessage":$m}' 2>/dev/null \
+    || printf '{"decision":"approve","systemMessage":"dual-review-loop paused this turn without advancing; its state is preserved. See .claude/dual-review-loop.log."}\n'
   exit 0
 }
 
@@ -188,16 +199,36 @@ fail_open() {
   # chance of guessing what happened. Thirteen call sites reached this with no
   # message at all.
   #
-  # One of them cannot be helped: the gate that fires when jq is missing builds
-  # its message with jq. That path falls through to the bare printf below, which
-  # is why the printf stays rather than being replaced. tests/jq-missing.test.sh
-  # pins that it still emits valid, non-empty JSON.
+  # The jq-less path was documented here as unfixable, on the grounds that the
+  # message is built with jq. That was wrong: the fallback message is a CONSTANT,
+  # and a static systemMessage via bare printf is already proven at the in-flight
+  # pause below. It matters because this path also deletes the state file — a
+  # transient PATH glitch used to destroy a loop with no output whatsoever.
+  #
+  # Only the reason string needs jq (it interpolates $1), so the two branches say
+  # different amounts. That is the honest split: specific when we can be, generic
+  # when we cannot, silent never.
   jq -n --arg r "$1" '{"decision":"approve","systemMessage":("dual-review-loop stopped on an error it cannot recover from (" + $r + "). Its state file and marker were cleared; nothing you committed was touched. Fix the cause and start a new loop.")}' 2>/dev/null \
-    || printf '{"decision":"approve"}\n'
+    || printf '{"decision":"approve","systemMessage":"dual-review-loop stopped on an unrecoverable error and cleared its state file and marker. Nothing you committed was touched. Check .claude/dual-review-loop.log, then start a new loop."}\n'
   exit 0
 }
 
-trap 'log "ERR trap fired (line $LINENO)"; rm -f "$INFLIGHT_FILE" 2>/dev/null; release_lock; DECISION_EMITTED=1; printf "{\"decision\":\"approve\"}\n"; exit 0' ERR
+# The trap is the one exit handler the message work did not reach, and it was
+# both silent and destructive.
+#
+# It used to `rm -f "$INFLIGHT_FILE"`. That marker is half of Gate 7's completion
+# evidence (marker + inflight_base_sha); deleting one half without the other made
+# the NEXT fire read branch (a) "the LLM cleared it — iteration finished" and
+# inject over work that never committed. A silent error became a false
+# completion, which is the opposite of the fail-safe direction this file claims.
+# Nothing the trap does needs the marker gone — release_lock is the cleanup that
+# matters — so it stays.
+#
+# The message is a plain printf with NO jq and NO expansion inside the string:
+# the trap fires precisely when something unexpected already went wrong, and a
+# message that itself fails to build is worse than a generic one. $LINENO goes
+# in the log, where a failure to expand it costs nothing.
+trap 'log "ERR trap fired (line $LINENO)"; release_lock; DECISION_EMITTED=1; printf "{\"decision\":\"approve\",\"systemMessage\":\"dual-review-loop hit an internal error and did not advance this turn. Its state and in-flight marker are untouched. See .claude/dual-review-loop.log for the line number.\"}\n"; exit 0' ERR
 
 # Belt and braces for the lock. Every exit path calls release_lock explicitly,
 # but a hook killed mid-run (CLI hook timeout, Ctrl-C on the turn) takes none of
@@ -241,9 +272,16 @@ if [ "$LOCK_HELD" -ne 1 ]; then
     "dual-review-loop: another hook instance holds the lock, so this turn did not advance. A lock with no live holder is reclaimed automatically after ${LOCK_STALE_MINUTES} minutes. To clear it now: rmdir $LOCK_DIR"
 fi
 
-# Gate 1: JSON parses?
-if ! jq -e . "$STATE_FILE" >/dev/null 2>&1; then
-  fail_open "state file is not valid JSON"
+# Gate 1: JSON parses AND is an object?
+#
+# `jq -e .` only asks "does this parse, and is it truthy". `[]`, `123` and
+# `"str"` all pass it, and the very next line runs `jq -r '.schema // ""'` on
+# them, which exits non-zero and trips the ERR trap. The result was that a file
+# which does not parse at all got the full fail_open explanation while a merely
+# wrong-shaped one got a bare approve — the more corrupt input was handled
+# better than the less corrupt one. Ask the real question here instead.
+if ! jq -e 'type == "object"' "$STATE_FILE" >/dev/null 2>&1; then
+  fail_open "state file is not a JSON object (unparseable, or parses to an array/string/number)"
 fi
 
 SCHEMA=$(jq -r '.schema // ""' "$STATE_FILE")
@@ -352,7 +390,11 @@ if idle_dead "$NOW_EPOCH" "$LAST_ACT" "$INFLIGHT_FILE" "$LAST_INJECTED_AT"; then
 fi
 
 # Gate 4: cross-session phantom defense
-SESSION_ID_HOOK=$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // ""' 2>/dev/null)
+# `|| echo ""` and not a bare pipe: jq exits non-zero when its INPUT does not
+# parse, and HOOK_INPUT is whatever the CLI handed us. Without the fallback a
+# malformed stdin trips the ERR trap instead of being treated as "no session id
+# supplied". The numeric-field read above already guards this way.
+SESSION_ID_HOOK=$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
 [ -n "$SESSION_ID_STATE" ] || fail_open "state.session_id empty"
 if [ -n "$SESSION_ID_HOOK" ] && [ "$SESSION_ID_HOOK" != "$SESSION_ID_STATE" ]; then
   soft_pause "different session ($SESSION_ID_HOOK != $SESSION_ID_STATE)" \
@@ -364,7 +406,7 @@ fi
 # our sentinel. Sentinels (mode-aware):
 #   plan: "[dual-review-loop iter <N>"
 #   task: "[dual-review-loop task iter <N>"
-TRANSCRIPT_PATH=$(printf '%s' "$HOOK_INPUT" | jq -r '.transcript_path // ""' 2>/dev/null)
+TRANSCRIPT_PATH=$(printf '%s' "$HOOK_INPUT" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")
 if [ "$LAST_INJECTED_ITER" -gt 0 ]; then
   CONTINUATION=0
   # Strategy A: time window — if injection was very recent, assume continuation
@@ -694,7 +736,10 @@ fi
 NEXT_ITER=$((ITERATION + 1))
 ITER_PADDED=$(printf '%03d' "$NEXT_ITER")
 NEXT_BRIEF_PATH="${REVIEWS_DIR}/iter-${ITER_PADDED}.md"
-mkdir -p "$REVIEWS_DIR" 2>/dev/null
+# An unwritable .claude (or a regular file sitting where the dir must go) fails
+# here. Without the guard that is an ERR-trap exit; with it the user is told.
+mkdir -p "$REVIEWS_DIR" 2>/dev/null \
+  || fail_open "cannot create the reviews directory: $REVIEWS_DIR (is .claude writable?)"
 
 # `iteration` is hand-seeded (see the state template in commands/), so it can be
 # rewound — re-seeding after a terminal gate sets it back to 0 and this path is
@@ -848,12 +893,24 @@ Do NOT manually edit .claude/dual-review-loop.state.json — the hook owns itera
 To cancel: rm .claude/dual-review-loop.state.json (or run /dual-review-loop:cancel-loop)."')
     SYSTEM_MSG="dual-review-loop task iter ${NEXT_ITER}/${MAX_ITERATIONS}"
     ;;
+  # Without this arm REASON and SYSTEM_MSG stay unset, and the jq below expands
+  # them under `set -u` — which aborts the shell AFTER DECISION_EMITTED=1, so the
+  # EXIT trap suppresses its own fail-open and stdout comes out EMPTY. Claude
+  # Code then sees no decision at all while the log claims the inject succeeded.
+  # Until now the only thing preventing that was the mode gate far above still
+  # listing the same two modes: a non-local invariant guarding the worst failure
+  # in this file. Adding a third mode to one case and not the other was enough.
+  *)
+    fail_open "unknown mode at inject time: $MODE"
+    ;;
 esac
 
-DECISION_EMITTED=1
+# DECISION_EMITTED goes up AFTER the print, not before. Set first, it converts
+# any failure inside the jq expansion into empty stdout (see the *) arm above).
 jq -n --arg r "$REASON" --arg s "$SYSTEM_MSG" \
   '{"decision":"block","reason":$r,"systemMessage":$s}' 2>/dev/null || \
   fail_open "final JSON emit failed"
+DECISION_EMITTED=1
 
 # Release lock; inflight stays until Claude removes it
 release_lock

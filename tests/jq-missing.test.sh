@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# The one terminal path that cannot carry a message.
+# The terminal path that runs without jq.
 #
-# fail_open builds its systemMessage with jq. The gate that fires when jq is
-# ABSENT therefore falls through to a bare approve. That is correct and cannot be
-# fixed from inside — what must never happen is empty stdout (the turn hangs) or
-# malformed JSON (the CLI cannot parse the decision).
+# This file used to open by calling it "the one terminal path that cannot carry a
+# message", because fail_open builds its systemMessage with jq. That was wrong,
+# and dual review said so: only the REASON string needs jq to interpolate. The
+# fallback message is a constant, and a static systemMessage via bare printf was
+# already proven elsewhere in the hook. It matters because this path also deletes
+# the state file — a transient PATH glitch used to destroy a loop with no output
+# at all.
+#
+# So the bar here is now higher than "valid JSON": empty stdout hangs the turn,
+# malformed JSON cannot be parsed, and a bare approve leaves the user with a
+# deleted loop and no idea why.
 #
 # ⚠️ A state file is required. Gate 0 ("state file missing") precedes the jq gate,
 # so without one this test exits at Gate 0 and proves nothing about jq at all —
@@ -80,6 +87,13 @@ esac
   && printf '  ✓ %-34s\n' "hook exits 0" \
   || { printf '  ✗ %-34s got=%s\n' "hook exits 0" "$rc"; fail=1; }
 
+# The assertion this file was missing. Without it the fallback can lose its
+# message and every other check here stays green — measured.
+msg=$(printf '%s' "$out" | sed -n 's/.*"systemMessage":"\([^"]*\)".*/\1/p')
+[ -n "$msg" ] \
+  && printf '  ✓ %-34s\n' "carries a user-facing message" \
+  || { printf '  ✗ %-34s got=[%s] — this path DELETES the state file, so a bare approve loses the loop silently\n' "carries a user-facing message" "$out"; fail=1; }
+
 echo ""
-[ "$fail" -eq 0 ] && echo "== jq missing: 4 passed, 0 failed ==" || echo "== jq missing: FAILED =="
+[ "$fail" -eq 0 ] && echo "== jq missing: 5 passed, 0 failed ==" || echo "== jq missing: FAILED =="
 exit "$fail"

@@ -19,7 +19,15 @@
 #                           REMOVED, measured at change time over every
 #                           iter-NNN.md brief on the machine: 6 removed, all
 #                           six verified by eye as '(none)' placeholders, and
-#                           0 real questions newly skipped.
+#                           0 real questions newly skipped RELATIVE TO THE
+#                           PREVIOUS REGEX. That delta is the whole claim. The
+#                           old regex also demanded a bare heading and a
+#                           -/*/+ bullet, so sections with numbered or prose
+#                           bodies were skipped by BOTH versions and do not
+#                           show up in the comparison at all. Dual review
+#                           found one such brief written FOR THIS REPO whose
+#                           two blocking decisions the detector still walks
+#                           past. Do not read this line as coverage.
 #   gate11n2-h3-heading     FIXED (A-3) — '###' headings are read, and a
 #                           sub-heading nested inside the section no longer
 #                           closes it.
@@ -46,6 +54,16 @@
 #                           a recoverable iteration count and baseline SHA.
 #                           Note this row moves via fail_open, which has 13
 #                           call sites — not via cleanup_and_approve.
+#   NOT IN THIS FILE        The ERR-trap exits have no rows and cannot get
+#                           one: observe() drives the hook THROUGH gates, and
+#                           a trap fires BETWEEN them. A state file that is
+#                           valid JSON but not an object, malformed hook
+#                           stdin, and an unwritable .claude all used to exit
+#                           silently there — and the trap also deleted the
+#                           in-flight marker, so the next fire read the
+#                           unfinished iteration as complete. Those live in
+#                           tests/silent-exit.test.sh. If you are counting
+#                           exit paths, count that file too.
 #   gate03-inactive         FIXED (A-1) — carries a message. It was the
 #                           silent-deletion path a pause setting
 #                           active=false would land on; it now explains
@@ -57,10 +75,18 @@
 #                           to Release C, not here.
 #   gate10-max-iterations   PARTLY FIXED (A-1) — same class as gate10b, same
 #                           half done. Expect the deletion diff at C.
-#   gate06-idle-timeout     now: state=N and an EMPTY systemMessage — 24h of
-#                           idleness deletes the loop silently. This is the
-#                           exact hazard midflight M5 guards against, frozen
-#                           here as if acceptable.
+#   gate06-idle-timeout     PARTLY FIXED (A-1) — the row now carries a full
+#                           message naming the 24h idleness, so the collection
+#                           is no longer silent. state=N is UNCHANGED and is
+#                           still the frozen half: the timeout DELETES rather
+#                           than pauses. Same class as gate10/10b; the deletion
+#                           diff belongs to Release C.
+#                           (This note itself was stale for one release — it
+#                           still claimed an EMPTY message after the row had
+#                           gained one. Nothing catches that: the comparison
+#                           strips ^# lines, so these annotations are
+#                           unverifiable by construction. Read them as prose
+#                           that needs reviewing like code, not as assertions.)
 #   gate08-plan-relative    PARTLY FIXED (A-1) — carries a message now, via
 #                           fail_open. A recoverable CONFIGURATION error
 #                           still DESTROYS state, same class as gate01. (A
@@ -174,7 +200,7 @@
 # Regenerate: bash tests/gate-matrix.test.sh --update
 advance-inject             | block   | state=Y active=true  marker=Y(2) lock=N iter=2/2 | sentinel="[dual-review-loop iter 2/20]" enforce=1 | dual-review-loop plan iter 2/20 | iter 2 → injecting (brief target: <TMP>/.claude/reviews/iter-002.md)
 gate00-no-state            | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - |  | 
-gate01-bad-json            | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop stopped on an error it cannot recover from (state file is not valid JSON). Its state file and marker were cleared; nothing you committed was touched. Fix the cause and start a new loop. | FAIL-OPEN: state file is not valid JSON
+gate01-bad-json            | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop stopped on an error it cannot recover from (state file is not a JSON object (unparseable, or parses to an array/string/number)). Its state file and marker were cleared; nothing you committed was touched. Fix the cause and start a new loop. | FAIL-OPEN: state file is not a JSON object (unparseable, or parses to an array/string/number)
 gate02-schema-unknown      | approve | state=Y active=true  marker=N(-) lock=N iter=1/0 | - | dual-review-loop paused: state schema 'v9' unknown. To resume: install a hook supporting this schema, OR run /dual-review-loop:cancel-loop (or rm <TMP>/.claude/dual-review-loop.state.json) to start over. | SOFT-PAUSE: schema mismatch (got=v9 expected one of: v1 v2) — state preserved; downgrade hook or cancel manually (state preserved)
 gate03-inactive            | approve | state=N active=-     marker=N(-) lock=N iter=-/- | - | dual-review-loop: the loop was already marked inactive, so its state was cleared. Nothing you committed was touched. | state.active != true
 gate04-session-mismatch    | approve | state=Y active=true  marker=N(-) lock=N iter=1/0 | - | dual-review-loop: this loop belongs to a different Claude Code session, so this turn did not advance it. Its state is untouched. Resume it from the session that started it, or run /dual-review-loop:cancel-loop to clear it. | SOFT-PAUSE: different session (test-session != other-session) (state preserved)
