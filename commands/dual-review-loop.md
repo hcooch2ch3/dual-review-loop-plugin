@@ -55,13 +55,19 @@ If `<plan-path>` is relative or not provided: prompt user once via AskUserQuesti
   "max_loc": 999999,
   "max_reviews": 999999,
   "session_id": "<from current Claude Code session>",
-  "pid": <current claude process pid>,
   "started_at_epoch": <now>,
   "started_at_sha": "<git rev-parse HEAD of the project repo (or empty if not a git repo)>",
   "last_iter_at_epoch": <now>,
   "last_brief_path": ""
 }
 ```
+
+`inflight_base_sha` and `reviews_baseline` are hook-owned: the hook writes them
+into the state file on its own fires, and a hand-written value corrupts the
+in-flight backstop and the review-budget baseline respectively — so never seed
+them here. The one field that must be correct is `session_id`; the hook
+fail-opens on an empty one and soft-pauses the loop when it does not match the
+session the Stop hook fired in.
 
 Schema v2 (was v1) adds `mode` (`"plan"` here, `"task"` for `/dual-review-loop:dual-review-task`), cumulative gate fields (`max_*`), and `started_at_sha` (used by the hook as a git diff baseline to compute changed-files/LOC counters automatically — no LLM trust). Defaults above (999999) keep plan-mode behaviour identical to v1; the cumulative caps only fire if a caller explicitly lowers them.
 

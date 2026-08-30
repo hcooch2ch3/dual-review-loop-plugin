@@ -69,12 +69,18 @@ AskUserQuestion. Reject descriptions outside `1 ≤ len ≤ 2000`.
   "max_reviews": <max_reviews>,
   "session_id": "<from current Claude Code session>",
   "started_at_sha": "<git rev-parse HEAD of the project repo (or empty if not a git repo)>",
-  "pid": <current claude process pid>,
   "started_at_epoch": <now>,
   "last_iter_at_epoch": <now>,
   "last_brief_path": ""
 }
 ```
+
+`inflight_base_sha` and `reviews_baseline` are hook-owned: the hook writes them
+into the state file on its own fires, and a hand-written value corrupts the
+in-flight backstop and the review-budget baseline respectively — so never seed
+them here. The one field that must be correct is `session_id`; the hook
+fail-opens on an empty one and soft-pauses the loop when it does not match the
+session the Stop hook fired in.
 
 Path: `<cwd>/.claude/dual-review-loop.state.json` (create `.claude/` if missing).
 Write via temp + mv for atomicity.

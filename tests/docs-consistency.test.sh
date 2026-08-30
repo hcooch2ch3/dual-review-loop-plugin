@@ -273,6 +273,97 @@ else
   fail "README no longer carries both block-cap observations — do not reduce them to one claim without a new measurement"
 fi
 
+# ---------------------------------------------------------------------------
+# 8. State-file ownership. The command files hand the model a JSON template to
+#    write, so anything in that template is a field the model will dutifully
+#    invent. Two failure shapes, both measured:
+#
+#    (a) A field nobody reads. `pid` was seeded by BOTH templates and read by
+#        the hook ZERO times (`grep -c '"pid"' hooks/stop-hook.sh` -> 0). Dead
+#        template fields are worse than noise here: they read as a contract, so
+#        a later reader adds pid-liveness logic to match a field that never
+#        meant anything. The absent_everywhere form is what makes this stick —
+#        the templates are duplicated across two files and the natural mistake
+#        is fixing one of them.
+#
+#    (b) A field the hook OWNS being written by hand. `inflight_base_sha` and
+#        `reviews_baseline` are written by the hook's own state update (see the
+#        `.reviews_baseline = $baseline | .inflight_base_sha = $inflightbase`
+#        assignment). Seeding them from the command corrupts the in-flight
+#        backstop and the review-budget baseline. Meanwhile `session_id` is the
+#        one field that MUST be right: the hook fail-opens on an empty one and
+#        soft-pauses the loop on a mismatch. Both templates have to say so, in
+#        the same paragraph as the template they qualify.
+# ---------------------------------------------------------------------------
+absent_everywhere "no doc still seeds a pid field the hook never reads" \
+    '"pid"[[:space:]]*:'
+# Derive the "hook never reads it" half from the hook, so re-introducing pid
+# handling there makes this assertion tell the truth instead of going stale.
+if [ "$(LC_ALL=C grep -c '"pid"' "$HOOK")" -eq 0 ]; then
+  ok "hook still reads no pid field (the reason the templates must not seed one)"
+else
+  fail "hook now reads a pid field — the templates may legitimately need it again; revisit the assertion above"
+fi
+
+# Paragraph mode: these docs wrap mid-sentence, so a line-oriented grep cannot
+# require the four tokens to be part of one claim. RS='' is the same idiom the
+# lease and gitignore assertions use.
+for site in "$CMD_PLAN:plan command" "$CMD_TASK:task command"; do
+  f=${site%:*}; label=${site##*:}
+  if LC_ALL=C awk -v RS='' '
+       index($0,"inflight_base_sha") && index($0,"reviews_baseline") &&
+       index($0,"session_id") && (index($0,"hook-owned") || index($0,"hook owns")) { found=1 }
+       END { exit !found }' "$f"; then
+    ok "$label marks the hook-owned state fields and names session_id as the one that must be right"
+  else
+    fail "$label does not name inflight_base_sha/reviews_baseline as hook-owned alongside session_id — a hand-written baseline breaks the in-flight backstop silently"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# 9. Two limitations that are deliberate hook behaviour, not bugs. Both were
+#    hit in real use and both look like a broken loop from the outside, so an
+#    undocumented one costs a debugging session. Each assertion is paired with
+#    a check against the hook, so the doc claim cannot outlive the behaviour.
+# ---------------------------------------------------------------------------
+# (a) Single-repo scope. Every git call is pinned to REPO_ROOT, which the hook
+#     resolves once from its own cwd. Commits that land in a DIFFERENT repo are
+#     invisible: the in-flight backstop sees no forward HEAD motion (no auto-
+#     advance) and `git diff --shortstat` measures 0, so max_files/max_loc never
+#     fire — the caps read as generous when they are simply blind.
+if LC_ALL=C grep -Eq '^REPO_ROOT=\$\(git rev-parse --show-toplevel' "$HOOK" \
+   && LC_ALL=C grep -q 'git -C "\$REPO_ROOT" diff --shortstat' "$HOOK"; then
+  ok "hook scopes its diff counters to a single REPO_ROOT (the behaviour the limitation describes)"
+else
+  fail "hook no longer resolves one REPO_ROOT / no longer measures the diff there — re-check the single-repo limitation in README"
+fi
+if LC_ALL=C awk -v RS='' '
+     index($0,"max_files") && index($0,"max_loc") &&
+     (index($0,"another repo") || index($0,"different repo") || index($0,"other repo")) { found=1 }
+     END { exit !found }' "$README"; then
+  ok "README documents that commits into another repo neither advance the loop nor count toward max_files/max_loc"
+else
+  fail "README does not tie the single-repo scope to max_files/max_loc — a blind cap reads as a generous one"
+fi
+
+# (b) Open Questions is a REVIEWER-DISAGREEMENT signal, and the detector's
+#     trailing anchor makes suffixed headings a deliberate non-match. Dropping
+#     the anchor was measured as a net regression, so the anchor is the thing
+#     the doc claim depends on: assert it is still there.
+if LC_ALL=C grep -q 'Open Questions\[\[:space:\]\]\*\$' "$HOOK"; then
+  ok "hook's Open Questions heading regex still anchors at end-of-line (what makes a suffixed heading not match)"
+else
+  fail "hook's Open Questions regex lost its trailing anchor — suffixed headings now stop the loop; README says they do not"
+fi
+if LC_ALL=C awk -v RS='' '
+     index($0,"Open Questions") && index($0,"unscored") { found=1 }
+     END { exit !found }' "$README"; then
+  ok "README documents that a suffixed Open Questions heading is deliberately not matched"
+else
+  fail "README does not document the suffixed-heading non-match — a reviewer using '## Open Questions (unscored)' gets silently ignored"
+fi
+
+
 echo ""
 echo "== docs consistency: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
