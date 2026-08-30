@@ -461,12 +461,57 @@ fi
 # misplacement is also why this now lives in its own section.) Instead: the
 # evidence must name the renderer case, and the limit must be a paragraph that
 # says BOTH what was not established and which mode it applies to.
+# The limit must be asserted ADJACENTLY, on one line, not as two tokens loose in
+# a paragraph. Measured: rewriting the sentence to "**Not established:** nothing
+# at all. Headless … was measured too and does emit it" kept both tokens in the
+# paragraph and the assertion stayed green while the README now claimed the
+# OPPOSITE of the measurement. An honesty check that cannot tell a limit from a
+# denial of that limit is worse than none — it certifies the inversion.
 if LC_ALL=C grep -q 'hook_system_message' "$README" \
-   && LC_ALL=C awk -v RS='' \
-        '/Not established/ && /headless/ { found=1 } END { exit !found }' "$README"; then
+   && LC_ALL=C grep -Eq '\*\*Not established:\*\*[[:space:]]*headless' "$README"; then
   ok "README records how systemMessage delivery was measured AND what was not measured"
 else
   fail "README no longer carries both halves of the systemMessage measurement — do not reduce it to a bare claim, in either direction, without a new measurement"
+fi
+
+# ---------------------------------------------------------------------------
+# 11. EVERY gate that ends a loop must account for the brief's verdict.
+#     This is the consumer-side invariant. The producer side was already pinned
+#     (classify before Gate 7, defined above its caller, one call site) and the
+#     suite still stayed green while six terminal exits ignored the answer —
+#     including the one that reports success and deletes the state. Pinning who
+#     COMPUTES the verdict says nothing about who READS it.
+#
+#     A terminal message either carries $(oq_suffix), or is on the allowlist
+#     below with the reason it does not need to. The allowlist is the point: it
+#     forces the next person to justify a silent terminal exit instead of just
+#     adding one.
+# ---------------------------------------------------------------------------
+# Allowed to omit the suffix, and why:
+#   "It was NOT idle"        - IS the open-question message (the OQ_VERDICT arm)
+#   "no activity for over"   - only reachable when the verdict is clear
+#   "every task in the plan is checked off" - guarded; not reached unless clear
+#   "the review brief has a question" - Gate 11 itself; it IS the message
+OQ_ALLOW='It was NOT idle|no activity for over|every task in the plan is checked off|the review brief has a question'
+MISSING=$(LC_ALL=C awk -v allow="$OQ_ALLOW" '
+  /cleanup_and_approve /{ n = NR }
+  n && NR <= n + 3 && /"dual-review-loop/ {
+    if ($0 !~ /oq_suffix/ && $0 !~ allow) print NR
+    n = 0
+  }' "$HOOK")
+if [ -z "$MISSING" ]; then
+  ok "every loop-ending message either carries the open-question note or is explicitly exempt"
+else
+  fail "terminal message(s) at line(s) $(echo "$MISSING" | tr '\n' ' ')end the loop without saying an open question is outstanding — add \$(oq_suffix) or justify it in the allowlist above"
+fi
+
+# And the helper it depends on has to exist and be defined above its callers.
+SUF_DEF=$(LC_ALL=C grep -n '^oq_suffix() {' "$HOOK" | head -1 | cut -d: -f1)
+SUF_USE=$(LC_ALL=C grep -n 'oq_suffix)' "$HOOK" | head -1 | cut -d: -f1)
+if [ -n "$SUF_DEF" ] && [ -n "$SUF_USE" ] && [ "$SUF_DEF" -lt "$SUF_USE" ]; then
+  ok "oq_suffix is defined above its first use (line $SUF_DEF < $SUF_USE)"
+else
+  fail "oq_suffix is missing or defined below its first use — bash resolves functions at call time, so it would expand to nothing and every note would silently vanish"
 fi
 
 echo ""

@@ -251,6 +251,20 @@ t=$(setup_repo g6)
 write_state "$(base_state "$t" | jq '.last_iter_at_epoch=1000000000 | .started_at_epoch=1000000000')" "$t"
 observe "gate06-idle-timeout" "$t"
 
+# Gate 6 x a loop the hook itself was holding. `soft_pause` never advances
+# last_iter_at_epoch, so a loop this hook deliberately refused to advance looks
+# identical to an abandoned one and was collected at 24h with the message "no
+# activity for over 24h" — a specific factual claim that is false, on the path
+# where the user is least able to check it. That is the same defect this file
+# already pins for corrupt timestamps ("corrupt state is not idle state"),
+# recreated for paused state. The row must NOT say "no activity"; it must name
+# the decision that was never answered.
+t=$(setup_repo g6oq)
+write_state "$(base_state "$t" | jq --arg b "$t/.claude/reviews/iter-001.md" '.last_iter_at_epoch=1000000000 | .started_at_epoch=1000000000 | .last_brief_path=$b')" "$t"
+mkdir -p "$t/.claude/reviews"
+printf '## Open Questions\n- A says drop the index, B says keep it\n' > "$t/.claude/reviews/iter-001.md"
+observe "gate06-idle-while-held" "$t"
+
 # Idle-GC boundary rows. The GC judgement has two inputs — staleness and the
 # in-flight marker — and before these rows existed only two of the four corners
 # were covered (gate06 = stale + no marker, gate07 = fresh + marker), so the
@@ -341,6 +355,26 @@ observe "gate06e-stale-same-session" "$t"
 t=$(setup_repo g7); write_state "$(base_state "$t")" "$t"
 printf '1\n' > "$t/.claude/dual-review-loop.inflight"
 observe "gate07-inflight-nocommit" "$t"
+
+# Gate 9 x an unanswered Open Question. The gate that ENDS a loop successfully,
+# with a brief that says the reviewers disagreed. Round-2 review found the loop
+# reporting "finished" and deleting state over it: oq_classify runs 100 lines
+# earlier and OQ_VERDICT is in scope, but only Gates 7 and 11 read it, and Gate 9
+# exits before Gate 11 is reached. The previous round filed exactly this shape
+# against Gate 7; the fix went to the reported instance and not to the class, and
+# no golden row combined a terminal gate with a brief, so nine green files said
+# nothing. Same for the iteration cap.
+t=$(setup_repo g9oq gitignore); write_state "$(base_state "$t" | jq --arg b "$t/.claude/reviews/iter-001.md" '.last_brief_path=$b')" "$t"
+mkdir -p "$t/.claude/reviews"
+printf '## Open Questions\n- A says drop the index, B says keep it\n' > "$t/.claude/reviews/iter-001.md"
+printf '# plan\n\n- [x] done\n' > "$t/plan.md"
+git -C "$t" add -A >/dev/null 2>&1; git -C "$t" commit -qm "all done" >/dev/null 2>&1
+observe "gate09-complete-open-question" "$t"
+
+t=$(setup_repo g10oq); write_state "$(base_state "$t" | jq --arg b "$t/.claude/reviews/iter-001.md" '.iteration=20 | .last_brief_path=$b')" "$t"
+mkdir -p "$t/.claude/reviews"
+printf '## Open Questions\n- A says drop the index, B says keep it\n' > "$t/.claude/reviews/iter-001.md"
+observe "gate10-maxiter-open-question" "$t"
 
 # Gate 7 + Gate 11 together — the combination that had no row, and is the most
 # likely real stop. The injected prompt tells the model to STOP on Open Questions

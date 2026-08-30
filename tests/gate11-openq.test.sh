@@ -58,6 +58,10 @@ t real-after-ph   '## Open Questions\n- 없음\n- an actual question\n'       ST
 
 echo "-- placeholders are not questions --"
 t placeholder-ko  '## Open Questions\n- 없음\n'                            ADVANCE
+# 없다 is the same answer as 없음. It was recognised by the sibling classifier and
+# not by this one, so "- 없다" TERMINATED a loop while "- 없음" advanced.
+t placeholder-ko2 '## Open Questions\n- 없다\n'                            ADVANCE
+t placeholder-ko3 '## Open Questions\n- 없다.\n'                           ADVANCE
 t haedang         '## Open Questions\n- 해당 없음\n'                        ADVANCE
 t placeholder-en  '## Open Questions\n- None\n'                            ADVANCE
 t placeholder-na  '## Open Questions\n- N/A\n'                             ADVANCE
@@ -123,16 +127,27 @@ echo "-- the third state: shaped like Open Questions, not actionable --"
 # does not come back. The suffixed one now PAUSES instead of vanishing: state is
 # preserved, the message names the heading it saw, and renaming it either way
 # resolves it.
-a() {  # $1=label  $2=body  $3=expect AMBIGUOUS|CLEAR
-  local got
+# $4 is optional and pins the DETAIL, the same way t() pins the item. Without it
+# this harness checked the exit status alone for all its cases: deleting the
+# trailing-whitespace strip left every one of them green while the detail became
+# "## Open Questions (unscored)\r". That string goes straight into the
+# systemMessage the user reads. The sibling harness in this very file had already
+# learned this lesson; the one written next to it did not inherit it.
+a() {  # $1=label  $2=body  $3=expect AMBIGUOUS|CLEAR  [$4=expected detail]
+  local got out
   cases=$((cases+1))
-  if printf '%b' "$2" | oq_ambiguous >/dev/null 2>&1; then got=AMBIGUOUS; else got=CLEAR; fi
-  if [ "$got" = "$3" ]; then
-    printf '  ✓ %-20s %s\n' "$1" "$got"
-  else
+  if out=$(printf '%b' "$2" | oq_ambiguous 2>/dev/null); then got=AMBIGUOUS; else got=CLEAR; out=""; fi
+  if [ "$got" != "$3" ]; then
     printf '  ✗ %-20s got=%s want=%s\n' "$1" "$got" "$3"
     fail=1
+    return
   fi
+  if [ -n "${4:-}" ] && [ "$out" != "$4" ]; then
+    printf '  ✗ %-20s detail=[%s] want=[%s]\n' "$1" "$out" "$4"
+    fail=1
+    return
+  fi
+  printf '  ✓ %-20s %s\n' "$1" "$got"
 }
 
 # Suffixed and decorated headings. The first is the one that cost a real brief:
@@ -142,7 +157,10 @@ a() {  # $1=label  $2=body  $3=expect AMBIGUOUS|CLEAR
 # and a degraded review is exactly when review coverage is already gone.
 a suffix-ko       '## Open Questions (진짜 결정 필요)\n1. a real question\n'  AMBIGUOUS
 a suffix-degraded '## Open Questions [DEGRADED]\n- unverified critical\n'   AMBIGUOUS
-a suffix-unscored '## Open Questions (unscored)\n- a note\n'                AMBIGUOUS
+a suffix-unscored '## Open Questions (unscored)\n- a note\n'                AMBIGUOUS '## Open Questions (unscored)'
+# CRLF and trailing spaces must not reach the user's terminal through the detail.
+a detail-crlf     '## Open Questions (unscored)\r\n- a note\r\n'            AMBIGUOUS '## Open Questions (unscored)'
+a detail-trailws  '## Open Questions (unscored)   \n- a note\n'            AMBIGUOUS '## Open Questions (unscored)'
 a suffix-colon    '## Open Questions:\n- a question\n'                      AMBIGUOUS
 a suffix-count    '## Open Questions (2)\n- a question\n'                   AMBIGUOUS
 a suffix-arrow    '## Open Questions → 해소됨\n- a note\n'                   AMBIGUOUS
@@ -151,10 +169,21 @@ a bold-heading    '## **Open Questions**\n- a question\n'                   AMBI
 a lowercase-q     '## Open questions\n- a question\n'                       AMBIGUOUS
 a h3-suffix       '### Open Questions (unscored)\n- a note\n'               AMBIGUOUS
 
-# Exact heading, but a body the terminal detector structurally cannot read.
-a prose-body      '## Open Questions\nShould we do A or B?\n'               AMBIGUOUS
-a table-body      '## Open Questions\n| q | who |\n|---|---|\n| A? | rev |\n' AMBIGUOUS
-a indented-only   '## Open Questions\n  - a nested question\n'              AMBIGUOUS
+# Bodies under an EXACT heading are not this function's business, and used to be.
+# Measured over 34 real briefs on this machine, the body branch produced most of
+# the false positives — including three documents whose section opens
+# "없다. …" (this project's own house style for "there are none", written BY this
+# loop) and the case oq_first_item is explicitly tuned to ignore. The heading
+# shapes are what dual review actually counted; bodies were never measured. Keep
+# the measured half.
+a prose-body      '## Open Questions\nShould we do A or B?\n'               CLEAR
+a table-body      '## Open Questions\n| q | who |\n|---|---|\n| A? | rev |\n' CLEAR
+a indented-only   '## Open Questions\n  - a nested question\n'              CLEAR
+# The exact input oq_first_item documents as the reason it ignores indented items.
+a ph-plus-note    '## Open Questions\n- 없음\n  - 다만 X는 확인 필요\n'        CLEAR
+# House style: "없다." followed by the reason, on one line.
+a prose-none-why  '## Open Questions\n없다. 두 리뷰어가 갈린 지점이 없고 …\n'  CLEAR
+a blockquote      '## Open Questions\n> nothing outstanding\n'              CLEAR
 
 # And the cases that must stay CLEAR, or this becomes a loop that never runs.
 a exact-with-item '## Open Questions\n- a real question\n'                  CLEAR
@@ -170,6 +199,13 @@ a prose-none-bold '## Open Questions\n**없다.**\n'                            
 a prose-none-tick '## Open Questions\n`none`\n'                             CLEAR
 a no-section      '## Findings\n- something\n'                             CLEAR
 a unrelated-head  '## Questions For Later\n- x\n'                          CLEAR
+# The phrase must START the heading, not merely appear in it. Both of these are
+# real documents on this machine that the unanchored substring test paused on:
+# a heading that NEGATES the phrase, and headings that are ABOUT the feature.
+a negated-head    '## No Open Questions\n- x\n'                            CLEAR
+a resolved-head   '## Resolved Open Questions\n- x\n'                      CLEAR
+a heading-about   '## 2. F2 — Gate 11의 "Open Questions"가 이름 충돌한다\n- x\n' CLEAR
+a task-title      '### Task 3: Open Questions 판정을 함수로 모은다\n- x\n'    CLEAR
 # A brief that SHOWS an example inside a fence is quoting, not declaring.
 a fenced-example  '## Findings\n```\n## Open Questions (x)\n- y\n```\n'      CLEAR
 

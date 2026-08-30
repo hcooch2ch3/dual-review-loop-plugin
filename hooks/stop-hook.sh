@@ -123,8 +123,13 @@ cleanup_and_approve() {
     log "BUG: terminal path with no user message — using a generic one: $1"
     msg="dual-review-loop ended and cleared its state ($1). Nothing you committed was touched — only the plugin's own state file and marker. Start a new loop to continue."
   fi
+  # The last messageless fallback in the file, and it is the one that DELETES
+  # state. Its two siblings were given static messages; this one kept a bare
+  # approve, so a jq failure here would clear a loop with no explanation at all.
+  # No reachable trigger was found (jq is guaranteed by an earlier gate), which
+  # is exactly why it is worth closing rather than arguing about.
   jq -n --arg m "$msg" '{"decision":"approve","systemMessage":$m}' 2>/dev/null \
-    || printf '{"decision":"approve"}\n'
+    || printf '{"decision":"approve","systemMessage":"dual-review-loop ended and cleared its state. Nothing you committed was touched — only the plugin state file and marker. Check .claude/dual-review-loop.log for the reason, then start a new loop."}\n'
   exit 0
 }
 
@@ -193,45 +198,24 @@ oq_ambiguous() {
     /^###?[[:space:]]/ {
       head = $0
       sub(/[[:space:]]+$/, "", head)
-      # A heading at the same level or shallower closes an open exact section,
-      # the same rule the terminal detector uses.
-      if (in_oq && length($1) <= level) in_oq = 0
-      if (head ~ /^###?[[:space:]]+Open Questions$/) { level = length($1); in_oq = 1; next }
+      # The exact bare heading is the terminal detector, not this one. Only the
+      # near misses are ours.
+      if (head ~ /^###?[[:space:]]+Open Questions$/) next
       probe = tolower(head)
-      # No emphasis stripping here on purpose: the match is a SUBSTRING test, so
-      # "## **Open Questions**" already contains "open questions". A gsub was
-      # written here first and removing it changed no case in the truth table —
-      # dead code in a classifier is worse than absent code, because the next
-      # reader assumes it is load-bearing. The body branch below strips for real:
-      # there the placeholder test is anchored, so "**없다.**" needs it.
-      if (probe ~ /open[[:space:]]+questions/) {
+      sub(/^#+[[:space:]]*/, "", probe)   # the hashes are not part of the title
+      gsub(/[*_`]/, "", probe)            # emphasis is decoration
+      sub(/^[^a-z]+/, "", probe)          # leading emoji, numbering, punctuation
+      # The phrase must START the title, not merely appear in it. An unanchored
+      # substring test paused on real documents that NEGATE the phrase
+      # ("## No Open Questions", "## Resolved Open Questions") and on documents
+      # merely ABOUT the feature ("### Task 3: Open Questions 판정을 …"). Those
+      # are headings whose own words say they are not a decision.
+      if (probe ~ /^open[[:space:]]+questions/) {
         found = 1
-        print "heading " head
+        print head
         exit
       }
       next
-    }
-
-    # Body of an EXACT section that the terminal detector did not act on. Reached
-    # only when oq_first_item already answered no, so a real top-level item here
-    # is not ours to judge.
-    in_oq {
-      line = $0
-      sub(/[[:space:]]+$/, "", line)
-      if (line ~ /^[[:space:]]*$/) next
-      if (line ~ /^([-*+]|[0-9]+[.)])[[:space:]]+/) next
-      probe = tolower(line)
-      gsub(/[*_`]/, "", probe)
-      sub(/^[[:space:]]+/, "", probe)
-      # An explicit "nothing here" written as prose is an answer, not a question.
-      if (probe ~ /^(없음|없다|해당[[:space:]]*없음|none|no[[:space:]]+open[[:space:]]+questions|n\/a)[[:space:]]*[.]?$/) next
-      if (probe ~ /^\(none/) next
-      # A table separator carries no content of its own.
-      if (probe ~ /^\|?[[:space:]]*:?-+:?[[:space:]]*(\|[[:space:]]*:?-+:?[[:space:]]*)*\|?$/) next
-      found = 1
-      line_short = line
-      print "body " line_short
-      exit
     }
     END { exit !found }
   '
@@ -287,6 +271,28 @@ oq_classify() {
   return 0
 }
 
+# Appended to a terminal message when the loop is ending with a decision still
+# unanswered in the last brief.
+#
+# The classification was hoisted so that BOTH readers get it — and then only two
+# gates read it, while six other exits kept ending loops without it. Round-2
+# review reproduced the worst one: every plan task checked off, a real
+# disagreement in the brief, and the hook reporting "the loop finished" while
+# deleting the state. The gate that exists to prevent that sits 140 lines below
+# and is never reached. A gate that ends a loop has to say what it is ending on.
+oq_suffix() {
+  case "$OQ_VERDICT" in
+    stop)
+      printf ' NOTE: the last review brief still holds an unanswered question — %s (brief: %s). Ending here does not resolve it.' \
+        "$(printf '%s' "$OQ_DETAIL" | head -c 160)" "${LAST_BRIEF_PATH:-<none>}"
+      ;;
+    pause)
+      printf ' NOTE: the last review brief has a section shaped like an open question that the loop could not read — %s (brief: %s). Worth a look before you treat this run as settled.' \
+        "$(printf '%s' "$OQ_DETAIL" | head -c 160)" "${LAST_BRIEF_PATH:-<none>}"
+      ;;
+  esac
+}
+
 oq_first_item() {
   awk '
     # Fenced blocks are quoted material, not document structure. A brief that
@@ -330,7 +336,10 @@ oq_first_item() {
       probe = tolower(item)
       if (probe ~ /^[-*+[:space:]]*$/) next                    # a thematic break
       # Placeholders are not questions. These rules only ever REMOVE stops.
-      if (probe ~ /^(없음|해당[[:space:]]*없음|none|no[[:space:]]+open[[:space:]]+questions|n\/a)[[:space:]]*[.]?$/) next
+      # 없다 belongs here too. It was added to the sibling classifier and not to
+      # this one, so "- 없다" TERMINATED a loop while "- 없음" advanced — the same
+      # word, opposite outcomes, in two functions twenty lines apart.
+      if (probe ~ /^(없음|없다|해당[[:space:]]*없음|none|no[[:space:]]+open[[:space:]]+questions|n\/a)[[:space:]]*[.]?$/) next
       if (probe ~ /^\(none/) next
       found = 1
       print item
@@ -413,7 +422,7 @@ fail_open() {
 # the trap fires precisely when something unexpected already went wrong, and a
 # message that itself fails to build is worse than a generic one. $LINENO goes
 # in the log, where a failure to expand it costs nothing.
-trap 'log "ERR trap fired (line $LINENO)"; release_lock; DECISION_EMITTED=1; printf "{\"decision\":\"approve\",\"systemMessage\":\"dual-review-loop hit an internal error and did not advance this turn. Its state and in-flight marker are untouched. See .claude/dual-review-loop.log for the line number.\"}\n"; exit 0' ERR
+trap 'log "ERR trap fired (line $LINENO)"; release_lock; printf "{\"decision\":\"approve\",\"systemMessage\":\"dual-review-loop hit an internal error and did not advance this turn. Its state and in-flight marker are untouched. See .claude/dual-review-loop.log for the line number.\"}\n"; DECISION_EMITTED=1; exit 0' ERR
 
 # Belt and braces for the lock. Every exit path calls release_lock explicitly,
 # but a hook killed mid-run (CLI hook timeout, Ctrl-C on the turn) takes none of
@@ -547,7 +556,23 @@ BAD_NUMERIC=$(jq -r '
 
 # Gate 3: active
 [ "$ACTIVE" = "true" ] || cleanup_and_approve "state.active != true" \
-  "dual-review-loop: the loop was already marked inactive, so its state was cleared. Nothing you committed was touched."
+  "dual-review-loop: the loop was already marked inactive, so its state was cleared. Nothing you committed was touched.$(oq_suffix)"
+
+# Read here rather than beside Gate 5 so the classification below can run before
+# the idle GC. It is a pure read of HOOK_INPUT and has no other ordering needs.
+TRANSCRIPT_PATH=$(printf '%s' "$HOOK_INPUT" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")
+
+# Classify the brief BEFORE the idle GC, not just before Gate 7.
+#
+# The GC decides whether a loop is dead from timestamps alone, and `soft_pause`
+# never advances a timestamp — so a loop this hook is deliberately holding looks
+# identical to an abandoned one. It was collected at 24h with the message "no
+# activity for over 24h", which is false: there was activity every turn and the
+# hook refused to advance. That is the same defect already fixed below for
+# corrupt timestamps, where the comment says "corrupt state is not idle state".
+# Paused state is not idle state either, and the GC can only know that if the
+# verdict exists before it runs.
+oq_classify
 
 # Gate 6 (idle GC): runs HERE, ahead of the defensive gates, not after them.
 #
@@ -570,6 +595,14 @@ BAD_NUMERIC=$(jq -r '
 LAST_ACT=$LAST_ITER_AT
 [ "$LAST_ACT" -eq 0 ] && LAST_ACT=$STARTED_AT
 if idle_dead "$NOW_EPOCH" "$LAST_ACT" "$INFLIGHT_FILE" "$LAST_INJECTED_AT"; then
+  if [ "$OQ_VERDICT" != "clear" ]; then
+    # Collected anyway — the lease is what bounds a hold, and an unbounded one is
+    # worse. But say what actually happened, because "no activity" sends the user
+    # looking for a crash instead of at the decision nobody told them was
+    # blocking the loop.
+    cleanup_and_approve "idle timeout (>${IDLE_TIMEOUT_SECONDS}s) while held on an open question" \
+      "dual-review-loop ended after more than 24h. It was NOT idle — it was holding for a decision in the review brief that was never answered: $(printf '%s' "$OQ_DETAIL" | head -c 160). Brief: ${LAST_BRIEF_PATH:-<none>}. Its state was cleared; answer the question and start a new loop."
+  fi
   cleanup_and_approve "idle timeout (>${IDLE_TIMEOUT_SECONDS}s)" \
     "dual-review-loop: this loop had no activity for over $((IDLE_TIMEOUT_SECONDS / 3600))h, so its state was collected and the loop has ended. Nothing you committed was touched — only the plugin's own state file and marker. To pick the work back up, start a new loop on the same plan."
 fi
@@ -591,7 +624,6 @@ fi
 # our sentinel. Sentinels (mode-aware):
 #   plan: "[dual-review-loop iter <N>"
 #   task: "[dual-review-loop task iter <N>"
-TRANSCRIPT_PATH=$(printf '%s' "$HOOK_INPUT" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")
 if [ "$LAST_INJECTED_ITER" -gt 0 ]; then
   CONTINUATION=0
   # Strategy A: time window — if injection was very recent, assume continuation
@@ -629,10 +661,6 @@ fi
 # Gate 6 ran here until the idle GC moved ahead of Gates 4/5 (see above). It is
 # NOT duplicated here: a second unconditional copy would collect exactly the
 # states the marker lease just exempted, making the lease dead code.
-
-# Classified here, ahead of Gate 7, because Gate 7 needs the answer and Gate 11
-# is where it is acted on. One evaluation, one answer, both readers.
-oq_classify
 
 # Gate 7: in-flight marker — previous iter not yet finalized.
 # UNION completion detection (dual review #11): the marker is hook-created but
@@ -693,8 +721,16 @@ if [ -f "$INFLIGHT_FILE" ]; then
     # bound to the gate that fired rather than to the cause of the stop, and only
     # ordering fixes that. So: look at the brief first, and let the real cause
     # speak even though a different gate is doing the talking.
-    if [ "$OQ_VERDICT" != "clear" ]; then
-      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} stopped on a reviewer disagreement, not on a commit problem. The brief has an open question and the loop must not decide it for you — $(printf '%s' "$OQ_DETAIL" | head -c 160). Brief: ${LAST_BRIEF_PATH:-<none>}. Answer it, then run /dual-review-loop:cancel-loop and start a new loop. Do NOT just clear the marker to make this go away: that lets the loop continue past a disagreement nobody settled."
+    # Two verdicts, two different claims. Saying "the brief has an open question"
+    # for a `pause` is a flat assertion about a document that often says the
+    # opposite in its own heading ("(저신뢰 — 판정을 좌우하지 않음)"). Only `stop`
+    # has actually read a question.
+    OQ_CAVEAT=""
+    [ -n "$INFLIGHT_BASE_SHA" ] || OQ_CAVEAT=" (Note: this loop has no baseline SHA — legacy or non-git state — so a landed commit cannot be auto-detected here.)"
+    if [ "$OQ_VERDICT" = "stop" ]; then
+      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} stopped on a reviewer disagreement, not on a commit problem. The brief has an open question and the loop must not decide it for you — $(printf '%s' "$OQ_DETAIL" | head -c 160). Brief: ${LAST_BRIEF_PATH:-<none>}. Answer it, then run /dual-review-loop:cancel-loop and start a new loop. Do NOT just clear the marker to make this go away: that lets the loop continue past a disagreement nobody settled.${OQ_CAVEAT}"
+    elif [ "$OQ_VERDICT" = "pause" ]; then
+      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} did not commit, and its brief has a heading shaped like an open question that the loop cannot read as a decision — $(printf '%s' "$OQ_DETAIL" | head -c 160). Brief: ${LAST_BRIEF_PATH:-<none>}. Check whether that section is a decision for you. If it is not, rename the heading to anything that does not begin with 'Open Questions' and the loop continues; /dual-review-loop:cancel-loop stops it instead.${OQ_CAVEAT}"
     elif [ -n "$INFLIGHT_BASE_SHA" ]; then
       PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} has not committed yet (plan mode can block commits, or it stopped early) and its brief shows no open question. It auto-resumes the moment a commit lands — exit plan mode and let it finish. If this iteration legitimately produced no commit, run /dual-review-loop:cancel-loop (or rm .claude/dual-review-loop.inflight)."
     else
@@ -748,11 +784,20 @@ case "$MODE" in
           # stops one gate short of completing. Without a message the turn
           # just ends and the user cannot tell success from a hang.
           soft_pause "no unfinished tasks but uncommitted changes present" \
-            "dual-review-loop: every task in the plan is complete, but the working tree still has uncommitted changes, so the loop did not declare completion. Commit or stash them and the loop finishes on the next turn. If the changes are plugin artifacts, add .claude/dual-review-loop.*, .claude/dual-review-loop/ and .claude/reviews/ to .gitignore."
+            "dual-review-loop: every task in the plan is complete, but the working tree still has uncommitted changes, so the loop did not declare completion. Commit or stash them and the loop finishes on the next turn. If the changes are plugin artifacts, add .claude/dual-review-loop.*, .claude/dual-review-loop/ and .claude/reviews/ to .gitignore.$(oq_suffix)"
         fi
       fi
-      cleanup_and_approve "all tasks complete after $ITERATION iterations" \
-        "dual-review-loop: every task in the plan is checked off — the loop finished after $ITERATION iteration(s). The review briefs are in .claude/reviews/."
+      # Completion is a CLAIM, not just an exit: it tells the user the run
+      # succeeded and then deletes the evidence. Never make it over a brief that
+      # still holds a decision — fall through instead, and let Gate 11 end the
+      # loop with the question as the stated reason. Gate 10 may fire first; its
+      # message now carries the question too.
+      if [ "$OQ_VERDICT" != "clear" ]; then
+        log "all tasks complete BUT the last brief still holds an open question — not declaring completion; deferring to Gate 11"
+      else
+        cleanup_and_approve "all tasks complete after $ITERATION iterations" \
+          "dual-review-loop: every task in the plan is checked off — the loop finished after $ITERATION iteration(s). The review briefs are in .claude/reviews/."
+      fi
     fi
     ;;
   task)
@@ -778,7 +823,7 @@ esac
 # Gate 10: max_iterations
 if [ "$MAX_ITERATIONS" -gt 0 ] && [ "$ITERATION" -ge "$MAX_ITERATIONS" ]; then
   cleanup_and_approve "max_iterations reached ($ITERATION >= $MAX_ITERATIONS)" \
-    "dual-review-loop: stopped at the iteration cap ($ITERATION of $MAX_ITERATIONS), with tasks still unfinished in the plan. Start a new loop with a higher --max-iters to continue."
+    "dual-review-loop: stopped at the iteration cap ($ITERATION of $MAX_ITERATIONS), with tasks still unfinished in the plan. Start a new loop with a higher --max-iters to continue.$(oq_suffix)"
 fi
 
 # Gate 10b: max_minutes (wall-clock cap since started_at_epoch)
@@ -787,7 +832,7 @@ if [ "$MAX_MINUTES" -gt 0 ] && [ "$STARTED_AT" -gt 0 ]; then
   CAP_SEC=$(( MAX_MINUTES * 60 ))
   if [ "$ELAPSED_SEC" -ge "$CAP_SEC" ]; then
     cleanup_and_approve "max_minutes reached (${ELAPSED_SEC}s >= ${CAP_SEC}s / ${MAX_MINUTES}min cap)" \
-      "dual-review-loop: stopped at the wall-clock cap (${MAX_MINUTES} min). This measures elapsed time, not work done — the clock runs while the loop waits for you. Start a new loop to continue."
+      "dual-review-loop: stopped at the wall-clock cap (${MAX_MINUTES} min). This measures elapsed time, not work done — the clock runs while the loop waits for you. Start a new loop to continue.$(oq_suffix)"
   fi
 fi
 
@@ -838,15 +883,15 @@ fi
 
 if [ "$CUM_FILES" -ge "$MAX_FILES" ]; then
   cleanup_and_approve "max_files reached ($CUM_FILES >= $MAX_FILES)" \
-    "dual-review-loop: stopped after touching $CUM_FILES files (cap $MAX_FILES). Review what landed, then start a new loop if that was expected."
+    "dual-review-loop: stopped after touching $CUM_FILES files (cap $MAX_FILES). Review what landed, then start a new loop if that was expected.$(oq_suffix)"
 fi
 if [ "$CUM_LOC" -ge "$MAX_LOC" ]; then
   cleanup_and_approve "max_loc reached ($CUM_LOC >= $MAX_LOC)" \
-    "dual-review-loop: stopped after changing $CUM_LOC lines (cap $MAX_LOC). Review what landed, then start a new loop if that was expected."
+    "dual-review-loop: stopped after changing $CUM_LOC lines (cap $MAX_LOC). Review what landed, then start a new loop if that was expected.$(oq_suffix)"
 fi
 if [ "$CUM_REVIEWS" -ge "$MAX_REVIEWS" ]; then
   cleanup_and_approve "max_reviews reached ($CUM_REVIEWS >= $MAX_REVIEWS)" \
-    "dual-review-loop: stopped after $CUM_REVIEWS dual-review runs (cap $MAX_REVIEWS). Start a new loop to continue."
+    "dual-review-loop: stopped after $CUM_REVIEWS dual-review runs (cap $MAX_REVIEWS). Start a new loop to continue.$(oq_suffix)"
 fi
 # (consecutive_same_failure gate removed in dual review #8 — fingerprint
 # was undefined across iters; max_iterations is the hard stop on stuck verify.)
@@ -888,9 +933,12 @@ esac
 # and that measurement still holds — what changed is that the loop no longer
 # walks past one in silence. State is preserved, so renaming the heading either
 # way resolves it and the loop picks up where it was.
-if [ "$OPEN_Q_FOUND" -eq 0 ] && [ -n "$OQ_AMBIG" ]; then
+# Gate on the verdict, not on the detail string. Gate 7 above reads OQ_VERDICT
+# while this read OQ_AMBIG — two readers of "one answer" asking different
+# questions. Latent only because the classifier never prints an empty detail.
+if [ "$OQ_VERDICT" = "pause" ]; then
   soft_pause "ambiguous Open Questions in brief ($OQ_AMBIG)" \
-    "dual-review-loop paused: the brief has something shaped like an Open Questions section that the loop cannot read as a decision — $(printf '%s' "$OQ_AMBIG" | head -c 160). The loop stops rather than guess, because this section is how a reviewer disagreement reaches you. If it IS a decision you need to make, rename the heading to exactly '## Open Questions' and put each item on its own top-level bullet. If it is a reviewer's own notes, rename it to anything else. Brief: ${LAST_BRIEF_PATH:-<none>}. Its state is preserved; /dual-review-loop:cancel-loop stops the loop instead."
+    "dual-review-loop paused: the brief has a heading shaped like an Open Questions section that the loop cannot read as a decision — $(printf '%s' "$OQ_DETAIL" | head -c 160). The loop holds rather than guess, because this section is how a reviewer disagreement reaches you. Two ways out, and they do NOT do the same thing. (1) It is only a reviewer's note: rename the heading to anything not beginning with 'Open Questions' and the loop RESUMES where it left off. (2) It is a real decision: rename it to exactly '## Open Questions' with each item on its own top-level bullet — the loop then ENDS and hands it to you, clearing its state (in task mode that also re-baselines the file/LOC/review budgets). Until you do one of those this message repeats every turn, and after 24h the loop is collected. Brief: ${LAST_BRIEF_PATH:-<none>}. /dual-review-loop:cancel-loop stops it now."
 fi
 
 if [ "$OPEN_Q_FOUND" -eq 1 ]; then

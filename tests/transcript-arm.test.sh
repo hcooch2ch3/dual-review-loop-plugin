@@ -36,9 +36,17 @@ run_case() {  # $1=label  $2=assistant text  $3=expect STOP|ADVANCE
   base=$(git -C "$t" rev-parse HEAD)
   now=$(date +%s)
   tr="$t/transcript.jsonl"
-  # One assistant line, shaped the way the hook's jq filter expects.
+  # Assistant lines, shaped the way the hook's jq filter expects. $4 (optional)
+  # is an EARLIER assistant message, written first — every case used to write a
+  # single line, which made first-vs-last unobservable: changing the hook's
+  # `tail -1` to `head -1` left the whole suite green while inverting which
+  # message decides the loop.
+  : > "$tr"
+  if [ -n "${4:-}" ]; then
+    jq -cn --arg txt "$4" '{message:{role:"assistant",content:[{type:"text",text:$txt}]}}' >> "$tr"
+  fi
   jq -cn --arg txt "$2" \
-    '{message:{role:"assistant",content:[{type:"text",text:$txt}]}}' > "$tr"
+    '{message:{role:"assistant",content:[{type:"text",text:$txt}]}}' >> "$tr"
 
   # last_brief_path empty is what routes execution to the fallback arm.
   jq -n --arg plan "$t/plan.md" --arg base "$base" --argjson now "$now" \
@@ -74,6 +82,11 @@ run_case() {  # $1=label  $2=assistant text  $3=expect STOP|ADVANCE
   elif [ "$3" = "PAUSE" ] && [ "$state" != "present" ]; then
     printf '  ✗ %-26s state was deleted — a pause must preserve it\n' "$1"
     fail=1
+  elif [ "$3" = "STOP" ] && [ "$state" != "deleted" ]; then
+    # The mirror of the PAUSE check. Both verdicts approve, so without this a
+    # STOP that quietly became a PAUSE on a real disagreement passes silently.
+    printf '  ✗ %-26s state survived — a terminal stop must clear it (did this become a pause?)\n' "$1"
+    fail=1
   else
     printf '  ✓ %-26s decision=%s\n' "$1" "$dec"
   fi
@@ -101,17 +114,30 @@ run_case "empty-section"  '## Open Questions
 run_case "ambiguous-heading" '## Open Questions (unscored)
 - A says drop the index, B says keep it' PAUSE
 
-run_case "ambiguous-prose"   '## Open Questions
+# A prose body under an EXACT heading advances. The pause is scoped to heading
+# shapes, which is what dual review actually measured; body shapes were never
+# measured and produced most of the false positives when they were included.
+run_case "prose-body"        '## Open Questions
 
-Should we drop the index or keep it?' PAUSE
+Should we drop the index or keep it?' ADVANCE
 
 run_case "prose-placeholder" '## Open Questions
 
 없다.' ADVANCE
 
+# The LAST assistant message is the one that decides. With only one message per
+# transcript that property is invisible; these two pin it from both directions.
+run_case "last-msg-wins-advance" '## Findings
+- all clear' ADVANCE '## Open Questions
+- an EARLIER question that is no longer current'
+
+run_case "last-msg-wins-stop"    '## Open Questions
+- the current question' STOP '## Findings
+- an earlier all-clear'
+
 echo ""
 if [ "$fail" -eq 0 ]; then
-  echo "== transcript arm: 6 passed, 0 failed =="
+  echo "== transcript arm: 8 passed, 0 failed =="
 else
   echo "== transcript arm: FAILED =="
 fi
