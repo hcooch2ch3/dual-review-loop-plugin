@@ -590,11 +590,39 @@ fi
 #   awk 'BEGIN{print "x"; exit 0} END{exit 1}' </dev/null; echo $?   -> 1
 oq_first_item() {
   awk '
-    /^## Open Questions[[:space:]]*$/ { in_oq=1; next }
-    /^## / { in_oq=0 }
-    in_oq && /^- / {
+    # Fenced blocks are quoted material, not document structure. A brief that
+    # shows an example Open Questions section inside ``` must not be read as
+    # having one, and a shell comment inside a fence must not end a real section.
+    # Measured: without this, "## Open Questions" followed by a ```bash block
+    # containing "# rebuild the index" skipped the real question underneath it.
+    /^[[:space:]]*```/ { fence = !fence; next }
+    fence { next }
+
+    # The trailing anchor is load-bearing. Dropping it was measured as a net
+    # regression over the real briefs: it starts stopping on
+    # "## Open Questions (unscored)" and "## Open Questions → 해소됨", which are
+    # reviewers using the section for their own notes. That collision is
+    # semantic and no regex resolves it.
+    /^###?[[:space:]]+Open Questions[[:space:]]*$/ { level = length($1); in_oq = 1; next }
+
+    # End on an h2/h3 at the same level or shallower, so a sub-heading nested
+    # inside the section does not close it. An h1 deliberately does NOT close it,
+    # matching the rule this replaces: treating a stray "# note" as a boundary
+    # would skip the question under it, and a skipped disagreement is the one
+    # outcome this gate exists to prevent. Over-stopping is the safe side.
+    /^###?[[:space:]]/ { if (length($1) <= level) in_oq = 0 }
+
+    # Top-level bullets only. Matching indented ones re-stops on a note nested
+    # under a placeholder ("- 없음" then "  - but see X").
+    in_oq && /^[-*+][[:space:]]+/ {
       item = $0
-      sub(/^-[[:space:]]*/, "", item)
+      sub(/^[-*+][[:space:]]+/, "", item)
+      sub(/[[:space:]]+$/, "", item)
+      probe = tolower(item)
+      if (probe ~ /^[-*+[:space:]]*$/) next                    # a thematic break
+      # Placeholders are not questions. These rules only ever REMOVE stops.
+      if (probe ~ /^(없음|해당[[:space:]]*없음|none|no[[:space:]]+open[[:space:]]+questions|n\/a)[[:space:]]*[.]?$/) next
+      if (probe ~ /^\(none/) next
       found = 1
       print item
       exit
@@ -624,7 +652,13 @@ elif [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
 fi
 
 if [ "$OPEN_Q_FOUND" -eq 1 ]; then
-  cleanup_and_approve "Open Questions detected in last brief — user decision needed"
+  # Quote the item. Without it the user is told a brief has a question but not
+  # which, and has to open the file to find out what stopped their loop.
+  # head -c, not cut -c: cut counts characters or bytes depending on locale, so
+  # it either does nothing or splits a Korean codepoint. A byte cut can land
+  # mid-codepoint; jq accepts that and renders U+FFFD, which is cosmetic.
+  cleanup_and_approve "Open Questions detected in last brief — user decision needed" \
+    "dual-review-loop: stopped because the review brief has a question that needs your decision. Brief: ${LAST_BRIEF_PATH:-<none>}. First item: $(printf '%s' "${OQ_ITEM:-<could not read>}" | head -c 200). Note this section means the two REVIEWERS DISAGREED — a reviewer's own follow-up notes belong under a different heading. Answer it, then start a new loop."
 fi
 
 # All gates passed — prepare to inject next iteration
