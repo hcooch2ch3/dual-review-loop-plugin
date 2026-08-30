@@ -379,11 +379,42 @@ if LC_ALL=C grep -q '^oq_ambiguous() {' "$HOOK"; then
 else
   fail "hook has no oq_ambiguous — README promises a pause the hook cannot produce"
 fi
-# Gate 7 must consult the brief, or the most common stop reports the wrong cause.
-if LC_ALL=C grep -q 'GATE7_OQ=$(oq_first_item' "$HOOK"; then
-  ok "Gate 7 consults the brief before blaming a commit problem"
+# Gate 7 must know the brief's verdict, or the most common stop reports the wrong
+# cause and advises continuing past a disagreement. Anchored on ORDER, not on a
+# variable name: the classification has to be resolved before the gate that reads
+# it. Bash looks a function up at call time, so "defined below the caller" is the
+# same as "absent" — that exact ordering bug shipped once in this file and made
+# the gate answer "no open question" for every brief it was handed.
+CLASSIFY_LINE=$(LC_ALL=C grep -n '^oq_classify$' "$HOOK" | head -1 | cut -d: -f1)
+GATE7_LINE=$(LC_ALL=C grep -n '^if \[ -f "\$INFLIGHT_FILE" \]; then' "$HOOK" | head -1 | cut -d: -f1)
+DEFN_LINE=$(LC_ALL=C grep -n '^oq_classify() {' "$HOOK" | head -1 | cut -d: -f1)
+if [ -z "$CLASSIFY_LINE" ] || [ -z "$GATE7_LINE" ] || [ -z "$DEFN_LINE" ]; then
+  fail "could not locate oq_classify (definition/call) or the Gate 7 marker check — anchors changed, this assertion is not running"
 else
-  fail "Gate 7 no longer reads the brief — a stop on reviewer disagreement is reported as a plan-mode commit block, and its advice is to continue past it"
+  if [ "$CLASSIFY_LINE" -lt "$GATE7_LINE" ]; then
+    ok "the brief is classified before Gate 7 reads it (line $CLASSIFY_LINE < $GATE7_LINE)"
+  else
+    fail "oq_classify runs at line $CLASSIFY_LINE, after Gate 7 at $GATE7_LINE — the gate reports a plan-mode commit block for what is actually a reviewer disagreement, and tells the user to continue past it"
+  fi
+  if [ "$DEFN_LINE" -lt "$CLASSIFY_LINE" ]; then
+    ok "oq_classify is defined above its caller"
+  else
+    fail "oq_classify is defined at line $DEFN_LINE, below the call at $CLASSIFY_LINE — bash resolves functions at call time, so the lookup fails silently"
+  fi
+fi
+# Both sources must go through the one classifier. Two call sites is how the
+# third state reached the brief-file arm and not the transcript arm.
+# Count INVOCATIONS, not mentions: comments discussing the detector and the
+# definition line itself are not call sites, and a naive grep -c counts them.
+OQ_CALLS=$(LC_ALL=C awk '
+  /^[[:space:]]*#/ { next }
+  /^oq_first_item\(\) \{/ { next }
+  /oq_first_item/ { n++ }
+  END { print n+0 }' "$HOOK")
+if [ "$OQ_CALLS" -eq 1 ]; then
+  ok "oq_first_item is invoked from exactly one place (the shared classifier)"
+else
+  fail "oq_first_item is invoked from $OQ_CALLS places, expected 1 — the last time it had two, only one of them learned about the third classifier state and the transcript arm silently advanced"
 fi
 
 

@@ -55,13 +55,27 @@ run_case() {  # $1=label  $2=assistant text  $3=expect STOP|ADVANCE
           '{session_id:"test-session",transcript_path:$tr,hook_event_name:"Stop"}' \
         | (cd "$t" && bash "$HOOK" 2>/dev/null))
   dec=$(printf '%s' "$out" | jq -r '.decision // ""' 2>/dev/null)
-  [ "$3" = "STOP" ] && want=approve || want=block
+  msg=$(printf '%s' "$out" | jq -r '.systemMessage // ""' 2>/dev/null)
+  state=present; [ -f "$t/.claude/dual-review-loop.state.json" ] || state=deleted
+  case "$3" in
+    STOP)    want=approve ;;
+    PAUSE)   want=approve ;;
+    ADVANCE) want=block ;;
+  esac
 
-  if [ "$dec" = "$want" ]; then
-    printf '  ✓ %-26s decision=%s\n' "$1" "$dec"
-  else
+  if [ "$dec" != "$want" ]; then
     printf '  ✗ %-26s decision=%s want=%s\n' "$1" "$dec" "$want"
     fail=1
+  elif [ "$3" = "PAUSE" ] && [ -z "$msg" ]; then
+    # STOP and PAUSE both approve, so the decision alone cannot separate them.
+    # The message is what makes a pause a pause rather than a silent advance.
+    printf '  ✗ %-26s approved with NO message — this is the silence, not a pause\n' "$1"
+    fail=1
+  elif [ "$3" = "PAUSE" ] && [ "$state" != "present" ]; then
+    printf '  ✗ %-26s state was deleted — a pause must preserve it\n' "$1"
+    fail=1
+  else
+    printf '  ✓ %-26s decision=%s\n' "$1" "$dec"
   fi
   rm -rf "$t"
 }
@@ -79,9 +93,25 @@ run_case "empty-section"  '## Open Questions
 ## Next
 - not a question' ADVANCE
 
+# The third state has to reach BOTH arms. It was wired into the brief-file arm
+# only, so a brief that arrives through the transcript kept the old two-outcome
+# behaviour and an ambiguous heading advanced in silence — precisely what the
+# third state exists to stop. The gate matrix cannot see this branch at all
+# (observe() pins transcript_path:""), which is why the gap survived a green run.
+run_case "ambiguous-heading" '## Open Questions (unscored)
+- A says drop the index, B says keep it' PAUSE
+
+run_case "ambiguous-prose"   '## Open Questions
+
+Should we drop the index or keep it?' PAUSE
+
+run_case "prose-placeholder" '## Open Questions
+
+없다.' ADVANCE
+
 echo ""
 if [ "$fail" -eq 0 ]; then
-  echo "== transcript arm: 3 passed, 0 failed =="
+  echo "== transcript arm: 6 passed, 0 failed =="
 else
   echo "== transcript arm: FAILED =="
 fi

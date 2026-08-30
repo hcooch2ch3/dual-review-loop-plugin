@@ -237,6 +237,56 @@ oq_ambiguous() {
   '
 }
 
+# The text Gate 7 and Gate 11 classify, resolved ONCE from whichever source is
+# available: the brief named in state, else the last assistant message in the
+# transcript.
+#
+# These were two separate call sites, each running the detector inline. When the
+# third classifier state was added it went into the brief-file arm only, so a
+# brief arriving through the transcript kept the old two-outcome behaviour and an
+# ambiguous heading advanced in silence — the exact thing the third state exists
+# to prevent, reintroduced in the branch no golden row can see. Resolving the
+# text once and classifying it in one place is what makes that class of gap
+# impossible rather than merely fixed.
+oq_source_text() {
+  if [ -n "$LAST_BRIEF_PATH" ] && [ -f "$LAST_BRIEF_PATH" ]; then
+    cat "$LAST_BRIEF_PATH" 2>/dev/null || true
+    return 0
+  fi
+  if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+    local last
+    last=$(grep '"role":"assistant"' "$TRANSCRIPT_PATH" 2>/dev/null | tail -1) || last=""
+    if [ -n "$last" ]; then
+      printf '%s' "$last" \
+        | jq -r '.message.content | map(select(.type=="text")) | map(.text) | join("\n")' 2>/dev/null \
+        || true
+    fi
+  fi
+  return 0
+}
+
+# Classify the brief once, into exactly the three states the gates act on.
+# Sets OQ_VERDICT (stop | pause | clear) and OQ_DETAIL. Never returns non-zero:
+# it runs under `set -u` with an ERR trap, and a classifier that can abort the
+# shell is worse than one that says "clear".
+oq_classify() {
+  local txt
+  txt=$(oq_source_text) || txt=""
+  OQ_VERDICT=clear
+  OQ_DETAIL=""
+  [ -n "$txt" ] || return 0
+  if OQ_DETAIL=$(printf '%s' "$txt" | oq_first_item 2>/dev/null); then
+    OQ_VERDICT=stop
+    return 0
+  fi
+  if OQ_DETAIL=$(printf '%s' "$txt" | oq_ambiguous 2>/dev/null); then
+    OQ_VERDICT=pause
+    return 0
+  fi
+  OQ_DETAIL=""
+  return 0
+}
+
 oq_first_item() {
   awk '
     # Fenced blocks are quoted material, not document structure. A brief that
@@ -580,6 +630,10 @@ fi
 # NOT duplicated here: a second unconditional copy would collect exactly the
 # states the marker lease just exempted, making the lease dead code.
 
+# Classified here, ahead of Gate 7, because Gate 7 needs the answer and Gate 11
+# is where it is acted on. One evaluation, one answer, both readers.
+oq_classify
+
 # Gate 7: in-flight marker — previous iter not yet finalized.
 # UNION completion detection (dual review #11): the marker is hook-created but
 # was historically LLM-cleared (prompt step 9 `rm inflight`). When the LLM
@@ -639,15 +693,8 @@ if [ -f "$INFLIGHT_FILE" ]; then
     # bound to the gate that fired rather than to the cause of the stop, and only
     # ordering fixes that. So: look at the brief first, and let the real cause
     # speak even though a different gate is doing the talking.
-    GATE7_OQ=""
-    if [ -n "$LAST_BRIEF_PATH" ] && [ -f "$LAST_BRIEF_PATH" ]; then
-      GATE7_OQ=$(oq_first_item < "$LAST_BRIEF_PATH" 2>/dev/null) || GATE7_OQ=""
-      if [ -z "$GATE7_OQ" ]; then
-        GATE7_OQ=$(oq_ambiguous < "$LAST_BRIEF_PATH" 2>/dev/null) || GATE7_OQ=""
-      fi
-    fi
-    if [ -n "$GATE7_OQ" ]; then
-      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} stopped on a reviewer disagreement, not on a commit problem. The brief has an open question and the loop must not decide it for you — $(printf '%s' "$GATE7_OQ" | head -c 160). Brief: ${LAST_BRIEF_PATH:-<none>}. Answer it, then run /dual-review-loop:cancel-loop and start a new loop. Do NOT just clear the marker to make this go away: that lets the loop continue past a disagreement nobody settled."
+    if [ "$OQ_VERDICT" != "clear" ]; then
+      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} stopped on a reviewer disagreement, not on a commit problem. The brief has an open question and the loop must not decide it for you — $(printf '%s' "$OQ_DETAIL" | head -c 160). Brief: ${LAST_BRIEF_PATH:-<none>}. Answer it, then run /dual-review-loop:cancel-loop and start a new loop. Do NOT just clear the marker to make this go away: that lets the loop continue past a disagreement nobody settled."
     elif [ -n "$INFLIGHT_BASE_SHA" ]; then
       PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} has not committed yet (plan mode can block commits, or it stopped early) and its brief shows no open question. It auto-resumes the moment a commit lands — exit plan mode and let it finish. If this iteration legitimately produced no commit, run /dual-review-loop:cancel-loop (or rm .claude/dual-review-loop.inflight)."
     else
@@ -823,30 +870,18 @@ fi
 # silently disables this gate. Measured:
 #   awk 'BEGIN{print "x"; exit 0} END{exit 1}' </dev/null; echo $?   -> 1
 
-# Gate 11: Open Questions in previous brief?
-# Prefer last_brief_path; fallback to transcript scan.
+# Gate 11: Open Questions in the previous brief?
+# Already classified above (oq_classify), from the brief file or the transcript.
+# Reading the verdict here rather than re-deriving it is the point: the two
+# sources used to be classified by two different bodies of code, and only one of
+# them learned about the third state.
 OPEN_Q_FOUND=0
 OQ_ITEM=""
 OQ_AMBIG=""
-if [ -n "$LAST_BRIEF_PATH" ] && [ -f "$LAST_BRIEF_PATH" ]; then
-  if OQ_ITEM=$(oq_first_item < "$LAST_BRIEF_PATH" 2>/dev/null); then
-    OPEN_Q_FOUND=1
-  else
-    # Only when the terminal detector said no. A section it CAN read is its
-    # business; this catches the ones it structurally cannot see.
-    OQ_AMBIG=$(oq_ambiguous < "$LAST_BRIEF_PATH" 2>/dev/null) || OQ_AMBIG=""
-  fi
-elif [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
-  # Fallback: search last assistant message text for Open Questions heading + non-empty body
-  LAST_ASSISTANT=$(grep '"role":"assistant"' "$TRANSCRIPT_PATH" | tail -1)
-  if [ -n "$LAST_ASSISTANT" ]; then
-    if OQ_ITEM=$(printf '%s' "$LAST_ASSISTANT" \
-        | jq -r '.message.content | map(select(.type=="text")) | map(.text) | join("\n")' 2>/dev/null \
-        | oq_first_item 2>/dev/null); then
-      OPEN_Q_FOUND=1
-    fi
-  fi
-fi
+case "$OQ_VERDICT" in
+  stop)  OPEN_Q_FOUND=1; OQ_ITEM="$OQ_DETAIL" ;;
+  pause) OQ_AMBIG="$OQ_DETAIL" ;;
+esac
 
 # Ambiguity pauses; it does not terminate. Terminating on a suffixed heading was
 # measured as a net regression (reviewers use the section for their own notes),
