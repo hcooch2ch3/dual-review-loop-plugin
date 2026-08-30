@@ -280,6 +280,16 @@ oq_classify() {
 # disagreement in the brief, and the hook reporting "the loop finished" while
 # deleting the state. The gate that exists to prevent that sits 140 lines below
 # and is never reached. A gate that ends a loop has to say what it is ending on.
+# Declared at definition time, not at first assignment. oq_classify sets these,
+# but it runs after Gate 3 — whose message interpolates oq_suffix — so on an
+# inactive loop the read happened before the write and `set -u` aborted the
+# command substitution. That one was survivable (the message printed, minus the
+# note); the same shape after DECISION_EMITTED=1 is the empty-stdout failure this
+# file is built around. Give them a safe value at the point they are introduced
+# and the ordering stops being load-bearing.
+OQ_VERDICT=clear
+OQ_DETAIL=""
+
 oq_suffix() {
   case "$OQ_VERDICT" in
     stop)

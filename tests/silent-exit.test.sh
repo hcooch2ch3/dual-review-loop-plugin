@@ -51,7 +51,8 @@ setup() {  # setup <state-json-literal> -> prints repo path
 # Run the hook once. Sets OUT / MSG / MARKER / LOGTAIL in the caller's scope.
 fire() {  # fire <repo> [stdin-json]
   local t="$1" stdin="${2:-{\"session_id\":\"s\",\"transcript_path\":\"\",\"hook_event_name\":\"Stop\"}}"
-  OUT=$(printf '%s' "$stdin" | (cd "$t" && bash "$HOOK" 2>/dev/null))
+  OUT=$(printf '%s' "$stdin" | (cd "$t" && bash "$HOOK" 2>"$t/stderr.txt"))
+  ERRTXT=$(cat "$t/stderr.txt" 2>/dev/null || echo "")
   MSG=$(printf '%s' "$OUT" | jq -r '.systemMessage // ""' 2>/dev/null || echo "")
   if [ -f "$t/.claude/dual-review-loop.inflight" ]; then MARKER=present; else MARKER=DELETED; fi
   LOGTAIL=$(tail -3 "$t/.claude/dual-review-loop.log" 2>/dev/null || echo "")
@@ -219,6 +220,31 @@ else
                          || bad "ERR trap: leaves the in-flight marker alone" "trap deleted it — the next fire would advance over uncommitted work"
 fi
 rm -rf "$tp"
+
+# --- 3c. No fire may report an unbound variable -----------------------------
+# This script runs under `set -u`, and its worst failure is an abort AFTER
+# DECISION_EMITTED is set: the EXIT trap then suppresses its own fallback and
+# stdout comes out empty. Every such abort begins as an "unbound variable" line
+# on stderr, so that line is the early warning for the whole class — including
+# the cases where it is currently survivable.
+#
+# Measured: `oq_suffix` reads OQ_VERDICT and was interpolated into the Gate 3
+# message, which fires SIXTEEN LINES before oq_classify assigns it. The message
+# still printed (the failure is confined to the command substitution) so every
+# assertion in this suite stayed green while every fire on an inactive loop
+# wrote "OQ_VERDICT: unbound variable" to stderr. A survivable instance of a
+# fatal class is still worth failing on.
+for lit in "$VALID_STATE" "$(printf '%s' "$VALID_STATE" | jq '.active=false')" "$(printf '%s' "$VALID_STATE" | jq '.iteration=99999')"; do
+  t=$(setup "$lit") || { echo "FATAL: setup"; exit 2; }
+  fire "$t"
+  label="stderr is clean ($(printf '%s' "$lit" | jq -r 'if .active == false then "inactive" elif .iteration > 999 then "past cap" else "normal" end' 2>/dev/null))"
+  case "$ERRTXT" in
+    *"unbound variable"*)
+      bad "$label" "$(printf '%s' "$ERRTXT" | head -1) — a set -u abort in a spot where it happens to be survivable" ;;
+    *) ok "$label" ;;
+  esac
+  rm -rf "$t"
+done
 
 # --- 4. The two `case "$MODE"` blocks must list the same modes ---------------
 # This is structural rather than behavioural, and it is the only shape that can
