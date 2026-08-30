@@ -387,6 +387,57 @@ else
 fi
 
 
+# ---------------------------------------------------------------------------
+# 10. Two claims a reader ACTS on, both of which were belief before they were
+#     measured, and both of which are invisible from inside a green test run.
+# ---------------------------------------------------------------------------
+# (a) The cumulative caps bound ONE RUN, not one task. Every terminal stop
+#     deletes the state file, which carries started_at_sha and reviews_baseline,
+#     so restarting re-baselines to HEAD and the budget starts over. Inert in
+#     plan mode (Infinity defaults); in task mode it is the difference between a
+#     budget and a suggestion, and nothing at runtime says so.
+# Scoped to the BULLET/paragraph block, not to an RS='' record. Two weaker
+# versions were measured escaping: one let `seen` persist across records, and the
+# same-record version still passed with the paragraph deleted, because the
+# Recovery section is one long bullet run in which the started_at_sha bullet says
+# "max_loc" and the reviews bullet says "resets the budget window". Blocks here
+# break on a blank line OR a new top-level bullet, the same scoping the gitignore
+# assertion uses.
+if LC_ALL=C awk '
+     /^[[:space:]]*[-*+] / || /^[[:space:]]*$/ { blk="" }
+     { blk = blk " " $0 }
+     (blk ~ /max-loc/ || blk ~ /max_loc/) && (blk ~ /reset/ || blk ~ /re-baseline/) { found=1 }
+     END { exit !found }' "$README"; then
+  ok "README states that the cumulative caps reset when a loop ends"
+else
+  fail "README does not say the cumulative caps re-baseline on restart — a task capped at --max-loc N can spend a multiple of N across stops with nothing warning the user"
+fi
+# The hook must say it too, at the stop where it actually happens.
+if LC_ALL=C grep -q 're-baselines the cumulative caps' "$HOOK"; then
+  ok "the Open Questions stop names the budget reset it causes"
+else
+  fail "the Open Questions stop no longer mentions the budget reset — 'start a new loop' reads as continuation"
+fi
+
+# (b) The delivery channel. Every message this plugin prints rides on
+#     systemMessage in a NON-blocking response; if that field were dropped the
+#     whole message effort would be inert. The repo went a release believing it
+#     rather than measuring it. Keep the measurement, and keep the honest limit
+#     next to it — the same standard the block-cap section already sets.
+# Two independent anchors rather than one section range. The range version passed
+# with the limit paragraph deleted: the subsection sat inside "Stop-hook block
+# budget", whose own probe note says "headless", so the range swallowed it. (That
+# misplacement is also why this now lives in its own section.) Instead: the
+# evidence must name the renderer case, and the limit must be a paragraph that
+# says BOTH what was not established and which mode it applies to.
+if LC_ALL=C grep -q 'hook_system_message' "$README" \
+   && LC_ALL=C awk -v RS='' \
+        '/Not established/ && /headless/ { found=1 } END { exit !found }' "$README"; then
+  ok "README records how systemMessage delivery was measured AND what was not measured"
+else
+  fail "README no longer carries both halves of the systemMessage measurement — do not reduce it to a bare claim, in either direction, without a new measurement"
+fi
+
 echo ""
 echo "== docs consistency: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

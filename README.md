@@ -78,6 +78,18 @@ Task mode also enforces cumulative caps: `--max-files 30`, `--max-loc 1500`,
 `--max-reviews 15` (Gates 10c–e). Plan mode defaults these to "Infinity" so they
 don't fire unless explicitly lowered.
 
+**The cumulative caps reset when a loop ends.** They are measured from
+`started_at_sha` and `reviews_baseline`, both of which live in the state file,
+and every terminal stop deletes that file. So a run that ends on an open question
+and is restarted re-baselines to the current `HEAD` and counts from zero again.
+Plan mode does not care (its defaults are effectively Infinity), but in task mode
+this is the difference between a budget and a suggestion: a task capped at
+`--max-loc 200` that stops on three reviewer disagreements can legitimately spend
+600 across the three runs. The cap bounds one run, not one task — budget
+accordingly, or check `git diff --shortstat` against where you actually started
+before launching the next one. (Carrying the baseline across a stop is a resume
+feature; it is not in this release.)
+
 Cancel manually: `rm .claude/dual-review-loop.state.json` in project root.
 
 ### Which mode?
@@ -162,6 +174,33 @@ guess.** What follows from the pair is narrower than either alone:
 If your loop stops without a `systemMessage` somewhere near 8 iterations, this is the
 first thing to suspect, and `.claude/dual-review-loop.log` will show the last gate that
 ran.
+
+## Message delivery: is `systemMessage` seen on a non-blocking response?
+
+Every stop reason this plugin prints rides on `systemMessage` in a
+`{"decision":"approve"}` response — a decision that does *not* block. That is
+worth stating plainly because it was believed rather than measured for a while,
+and if the field were dropped the messages would be inert.
+
+**Measured** by reading the installed CLI bundle (`cli.js`), not by assumption:
+
+- The schema takes `decision: "approve" | "block"` and `systemMessage` as
+  **sibling** fields — `systemMessage` is not nested under a decision.
+- The handler assigns `if (A.systemMessage) W.systemMessage = A.systemMessage`
+  **outside** the decision switch, so an approve carries it just as a block does.
+- The renderer is the decisive part. The two cases immediately adjacent to it
+  suppress themselves for Stop hooks — `hook_stopped_continuation` and
+  `hook_blocking_error` both `return null` when `hookEvent === "Stop"` — and
+  `hook_system_message` does **not**. It renders as `<hookName> says: <message>`.
+- `normalizeAttachmentForAPI` returns `[]` for it, so the text goes to the user
+  and never back into the model's context. That is the right shape for this use.
+
+So in the interactive CLI the channel works, and it appears to be the one
+deliberately left visible for Stop hooks. **Not established:** headless
+`claude -p --output-format text`. The attachment is built for the UI layer, and
+whether the text printer emits it was not traced — so if you run loops headless
+and depend on seeing these messages, measure that first. `.claude/dual-review-loop.log`
+records every stop reason regardless of client.
 
 ## Architecture (quick reference)
 

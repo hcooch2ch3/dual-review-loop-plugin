@@ -865,7 +865,7 @@ if [ "$OPEN_Q_FOUND" -eq 1 ]; then
   # it either does nothing or splits a Korean codepoint. A byte cut can land
   # mid-codepoint; jq accepts that and renders U+FFFD, which is cosmetic.
   cleanup_and_approve "Open Questions detected in last brief — user decision needed" \
-    "dual-review-loop: stopped because the review brief has a question that needs your decision. Brief: ${LAST_BRIEF_PATH:-<none>}. First item: $(printf '%s' "${OQ_ITEM:-<could not read>}" | head -c 200). Note this section means the two REVIEWERS DISAGREED — a reviewer's own follow-up notes belong under a different heading. Answer it, then start a new loop."
+    "dual-review-loop: stopped because the review brief has a question that needs your decision. Brief: ${LAST_BRIEF_PATH:-<none>}. First item: $(printf '%s' "${OQ_ITEM:-<could not read>}" | head -c 200). Note this section means the two REVIEWERS DISAGREED — a reviewer's own follow-up notes belong under a different heading. Answer it, then start a new loop — note that a new loop re-baselines the cumulative caps (max_files/max_loc/max_reviews) to the current HEAD, so in task mode the budget starts over."
 fi
 
 # All gates passed — prepare to inject next iteration
