@@ -570,29 +570,54 @@ fi
 # (consecutive_same_failure gate removed in dual review #8 — fingerprint
 # was undefined across iters; max_iterations is the hard stop on stuck verify.)
 
+# The Open Questions classifier, in one place.
+#
+# It lived in two copies — the brief arm and the transcript fallback — that had
+# to be kept identical by hand, and no golden row exercises the fallback because
+# observe() hardcodes transcript_path:"". A drift between them would therefore
+# never turn a light red. tests/transcript-arm.test.sh covers the arm the matrix
+# cannot reach.
+#
+# Reads stdin rather than taking a path. A path parameter would force the
+# transcript arm to materialise a temp file, and a failed mktemp there lands on
+# the ERR trap: a bare approve with no message, i.e. a new silent exit added by
+# a refactor whose whole point is removing them.
+#
+# `found=1 ... exit` with `END { exit !found }`, not `exit 0` in the rule: in awk
+# an exit inside a rule transfers to END, and an exit in END REPLACES the status.
+# `print; exit 0` + `END { exit 1 }` therefore always reports "nothing found" and
+# silently disables this gate. Measured:
+#   awk 'BEGIN{print "x"; exit 0} END{exit 1}' </dev/null; echo $?   -> 1
+oq_first_item() {
+  awk '
+    /^## Open Questions[[:space:]]*$/ { in_oq=1; next }
+    /^## / { in_oq=0 }
+    in_oq && /^- / {
+      item = $0
+      sub(/^-[[:space:]]*/, "", item)
+      found = 1
+      print item
+      exit
+    }
+    END { exit !found }
+  '
+}
+
 # Gate 11: Open Questions in previous brief?
 # Prefer last_brief_path; fallback to transcript scan.
 OPEN_Q_FOUND=0
+OQ_ITEM=""
 if [ -n "$LAST_BRIEF_PATH" ] && [ -f "$LAST_BRIEF_PATH" ]; then
-  if awk '
-    /^## Open Questions[[:space:]]*$/ { in_oq=1; next }
-    /^## / { in_oq=0 }
-    in_oq && /^- / { found=1; exit }
-    END { exit !found }
-  ' "$LAST_BRIEF_PATH" 2>/dev/null; then
+  if OQ_ITEM=$(oq_first_item < "$LAST_BRIEF_PATH" 2>/dev/null); then
     OPEN_Q_FOUND=1
   fi
 elif [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
   # Fallback: search last assistant message text for Open Questions heading + non-empty body
   LAST_ASSISTANT=$(grep '"role":"assistant"' "$TRANSCRIPT_PATH" | tail -1)
   if [ -n "$LAST_ASSISTANT" ]; then
-    BODY=$(printf '%s' "$LAST_ASSISTANT" | jq -r '.message.content | map(select(.type=="text")) | map(.text) | join("\n")' 2>/dev/null)
-    if printf '%s' "$BODY" | awk '
-      /^## Open Questions[[:space:]]*$/ { in_oq=1; next }
-      /^## / { in_oq=0 }
-      in_oq && /^- / { found=1; exit }
-      END { exit !found }
-    ' 2>/dev/null; then
+    if OQ_ITEM=$(printf '%s' "$LAST_ASSISTANT" \
+        | jq -r '.message.content | map(select(.type=="text")) | map(.text) | join("\n")' 2>/dev/null \
+        | oq_first_item 2>/dev/null); then
       OPEN_Q_FOUND=1
     fi
   fi
