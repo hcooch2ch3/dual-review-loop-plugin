@@ -114,12 +114,12 @@ run_case "empty-section"  '## Open Questions
 run_case "ambiguous-heading" '## Open Questions (unscored)
 - A says drop the index, B says keep it' PAUSE
 
-# A prose body under an EXACT heading advances. The pause is scoped to heading
-# shapes, which is what dual review actually measured; body shapes were never
-# measured and produced most of the false positives when they were included.
+# A prose body under an EXACT heading pauses. It used to advance, which put the
+# canonical heading on the wrong side of the loop's own injected instruction
+# ("If ## Open Questions non-empty: STOP").
 run_case "prose-body"        '## Open Questions
 
-Should we drop the index or keep it?' ADVANCE
+Should we drop the index or keep it?' PAUSE
 
 run_case "prose-placeholder" '## Open Questions
 
@@ -135,9 +135,60 @@ run_case "last-msg-wins-stop"    '## Open Questions
 - the current question' STOP '## Findings
 - an earlier all-clear'
 
+# --- the transcript belongs to the SESSION, not to the loop ------------------
+# The classifier now runs ahead of the idle GC, which runs ahead of the
+# cross-session gate. So a state owned by a dead session gets classified while
+# the only transcript available belongs to whoever is firing now. Without a
+# session guard the GC quoted that stranger's work as "the decision in the review
+# brief" — in the same sentence that said "Brief: <none>" — and then deleted the
+# state. A specific, checkable-sounding, false claim on the destructive path.
+foreign_session_case() {
+  local t base now tr out msg
+  t=$(mktemp -d "${TMPDIR:-/tmp}/drl-fs.XXXXXX") || return 1
+  (
+    set -e
+    cd "$t"; git init -q
+    git config user.email t@t.t; git config user.name t
+    printf '.claude/\n' > .gitignore
+    printf '# plan\n\n- [ ] do something\n' > plan.md
+    git add -A && git commit -qm initial
+    mkdir -p .claude
+  ) >/dev/null 2>&1 || return 1
+  base=$(git -C "$t" rev-parse HEAD)
+  tr="$t/transcript.jsonl"
+  jq -cn --arg txt '## Open Questions
+- unrelated work happening in THIS session' \
+    '{message:{role:"assistant",content:[{type:"text",text:$txt}]}}' > "$tr"
+  # Owned by a session that is gone, and idle past the timeout so the GC fires.
+  jq -n --arg plan "$t/plan.md" --arg base "$base" \
+    '{schema:"v2",mode:"plan",active:true,plan_path:$plan,iteration:1,
+      max_iterations:20,max_minutes:0,max_files:999999,max_loc:999999,
+      max_reviews:999999,session_id:"OWNER-SESSION",
+      started_at_epoch:1000000000,last_iter_at_epoch:1000000000,
+      last_injected_at_epoch:1000000000,last_injected_iter:0,
+      started_at_sha:$base,inflight_base_sha:$base,
+      last_brief_path:"",reviews_baseline:0}' \
+    > "$t/.claude/dual-review-loop.state.json"
+  out=$(jq -cn --arg tr "$tr" \
+          '{session_id:"OTHER-SESSION",transcript_path:$tr,hook_event_name:"Stop"}' \
+        | (cd "$t" && bash "$HOOK" 2>/dev/null))
+  msg=$(printf '%s' "$out" | jq -r '.systemMessage // ""' 2>/dev/null)
+  rm -rf "$t"
+  case "$msg" in
+    *"unrelated work happening in THIS session"*)
+      printf '  ✗ %-26s quoted another session transcript as this loop brief\n' "foreign-transcript"
+      fail=1 ;;
+    *"NOT idle"*)
+      printf '  ✗ %-26s claimed a held decision it read from another session\n' "foreign-transcript"
+      fail=1 ;;
+    *) printf '  ✓ %-26s\n' "foreign-transcript" ;;
+  esac
+}
+foreign_session_case
+
 echo ""
 if [ "$fail" -eq 0 ]; then
-  echo "== transcript arm: 8 passed, 0 failed =="
+  echo "== transcript arm: 9 passed, 0 failed =="
 else
   echo "== transcript arm: FAILED =="
 fi

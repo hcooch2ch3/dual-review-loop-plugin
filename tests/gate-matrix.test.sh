@@ -265,6 +265,16 @@ mkdir -p "$t/.claude/reviews"
 printf '## Open Questions\n- A says drop the index, B says keep it\n' > "$t/.claude/reviews/iter-001.md"
 observe "gate06-idle-while-held" "$t"
 
+# Same, with the AMBIGUOUS verdict. The suffix helper has two arms and every row
+# that reached one drove `stop`, so deleting the `pause)` arm outright left the
+# whole suite green — half the helper was unexercised. Gate 6 collapsing the two
+# arms is the same conflation this file splits at Gates 7 and 11.
+t=$(setup_repo g6amb)
+write_state "$(base_state "$t" | jq --arg b "$t/.claude/reviews/iter-001.md" '.last_iter_at_epoch=1000000000 | .started_at_epoch=1000000000 | .last_brief_path=$b')" "$t"
+mkdir -p "$t/.claude/reviews"
+printf '## Open Questions → 해소됨\n- resolved during review\n' > "$t/.claude/reviews/iter-001.md"
+observe "gate06-idle-while-held-ambiguous" "$t"
+
 # Idle-GC boundary rows. The GC judgement has two inputs — staleness and the
 # in-flight marker — and before these rows existed only two of the four corners
 # were covered (gate06 = stale + no marker, gate07 = fresh + marker), so the
@@ -375,6 +385,20 @@ t=$(setup_repo g10oq); write_state "$(base_state "$t" | jq --arg b "$t/.claude/r
 mkdir -p "$t/.claude/reviews"
 printf '## Open Questions\n- A says drop the index, B says keep it\n' > "$t/.claude/reviews/iter-001.md"
 observe "gate10-maxiter-open-question" "$t"
+
+t=$(setup_repo g10amb); write_state "$(base_state "$t" | jq --arg b "$t/.claude/reviews/iter-001.md" '.iteration=20 | .last_brief_path=$b')" "$t"
+mkdir -p "$t/.claude/reviews"
+printf '## Open Questions (unscored)\n- reviewer note, not a decision\n' > "$t/.claude/reviews/iter-001.md"
+observe "gate10-maxiter-ambiguous" "$t"
+
+# fail_open x an open question. fail_open ALSO deletes state, and the invariant
+# was written against cleanup_and_approve alone, so nothing drove a non-clear
+# verdict through it: removing the note from fail_open left the whole suite
+# green. A user hits this by renaming or moving their plan file.
+t=$(setup_repo g8oq); write_state "$(base_state "$t" | jq --arg b "$t/.claude/reviews/iter-001.md" --arg p "$t/gone.md" '.plan_path=$p | .last_brief_path=$b')" "$t"
+mkdir -p "$t/.claude/reviews"
+printf '## Open Questions\n- A says drop the index, B says keep it\n' > "$t/.claude/reviews/iter-001.md"
+observe "gate08-plan-missing-open-question" "$t"
 
 # Gate 7 + Gate 11 together — the combination that had no row, and is the most
 # likely real stop. The injected prompt tells the model to STOP on Open Questions

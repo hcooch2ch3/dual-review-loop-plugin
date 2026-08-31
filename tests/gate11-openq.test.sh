@@ -169,21 +169,36 @@ a bold-heading    '## **Open Questions**\n- a question\n'                   AMBI
 a lowercase-q     '## Open questions\n- a question\n'                       AMBIGUOUS
 a h3-suffix       '### Open Questions (unscored)\n- a note\n'               AMBIGUOUS
 
-# Bodies under an EXACT heading are not this function's business, and used to be.
-# Measured over 34 real briefs on this machine, the body branch produced most of
-# the false positives — including three documents whose section opens
-# "없다. …" (this project's own house style for "there are none", written BY this
-# loop) and the case oq_first_item is explicitly tuned to ignore. The heading
-# shapes are what dual review actually counted; bodies were never measured. Keep
-# the measured half.
-a prose-body      '## Open Questions\nShould we do A or B?\n'               CLEAR
-a table-body      '## Open Questions\n| q | who |\n|---|---|\n| A? | rev |\n' CLEAR
-a indented-only   '## Open Questions\n  - a nested question\n'              CLEAR
-# The exact input oq_first_item documents as the reason it ignores indented items.
+# Bodies under an EXACT heading that the terminal detector structurally cannot
+# read. These pause.
+#
+# This branch was deleted once, on the argument that heading shapes were what
+# dual review measured and body shapes were not. That argument is backwards for
+# THIS gate: it exists so the loop cannot settle a reviewer disagreement alone,
+# so "never measured" has to resolve to hold, not to advance. Deleting it also
+# produced an inversion — a heading decorated "(unscored)" held the loop while
+# the CANONICAL heading walked past the same question in prose — and it put the
+# hook at odds with the prompt it injects, which tells the model
+# `If "## Open Questions" non-empty: STOP`. Prose is non-empty by any reading.
+#
+# The measured false positives were real, and they are answered by anchoring the
+# placeholder test to a PREFIX instead of the whole line, not by deleting the
+# class: this project writes "없다." followed by the reason on one line.
+a prose-body      '## Open Questions\nShould we do A or B?\n'               AMBIGUOUS
+a table-body      '## Open Questions\n| q | who |\n|---|---|\n| A? | rev |\n' AMBIGUOUS
+a blockquote      '## Open Questions\n> should we drop the index?\n'        AMBIGUOUS
+# An indented item with NO top-level item above it is orphaned content, not a
+# nested note — the terminal detector skips it and nothing else would see it.
+a indented-only   '## Open Questions\n  - a nested question\n'              AMBIGUOUS
+# ...but a note nested UNDER a top-level item is exactly what oq_first_item
+# documents itself as ignoring on purpose. Pausing on it re-creates the false
+# positive that rule was written to remove.
 a ph-plus-note    '## Open Questions\n- 없음\n  - 다만 X는 확인 필요\n'        CLEAR
-# House style: "없다." followed by the reason, on one line.
+a real-plus-note  '## Open Questions\n- a real question\n  - side note\n'   CLEAR
+# House style: "없다." followed by the reason, on one line. Whole-line anchoring
+# missed this and was the single largest measured source of false pauses.
 a prose-none-why  '## Open Questions\n없다. 두 리뷰어가 갈린 지점이 없고 …\n'  CLEAR
-a blockquote      '## Open Questions\n> nothing outstanding\n'              CLEAR
+a prose-none-paren '## Open Questions\n(없음 — 루프 계속)\n'                  CLEAR
 
 # And the cases that must stay CLEAR, or this becomes a loop that never runs.
 a exact-with-item '## Open Questions\n- a real question\n'                  CLEAR

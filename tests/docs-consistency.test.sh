@@ -492,12 +492,29 @@ fi
 #   "no activity for over"   - only reachable when the verdict is clear
 #   "every task in the plan is checked off" - guarded; not reached unless clear
 #   "the review brief has a question" - Gate 11 itself; it IS the message
-OQ_ALLOW='It was NOT idle|no activity for over|every task in the plan is checked off|the review brief has a question'
-MISSING=$(LC_ALL=C awk -v allow="$OQ_ALLOW" '
-  /cleanup_and_approve /{ n = NR }
-  n && NR <= n + 3 && /"dual-review-loop/ {
-    if ($0 !~ /oq_suffix/ && $0 !~ allow) print NR
-    n = 0
+# BOTH state-deleting helpers, not just the one the reported exits happened to
+# use. fail_open also runs `rm -f "$STATE_FILE"` and has a dozen call sites; the
+# first version of this assertion scanned only cleanup_and_approve and was
+# therefore scoped to the instances, which is the very complaint it answers.
+#
+# The allowlist matches WHOLE LINES, not substrings. A substring alternation
+# exempted any future message that merely happened to contain an exempt phrase —
+# measured — so it could swallow an exit nobody ever reviewed.
+OQ_ALLOW_RE='^[[:space:]]*"dual-review-loop( ended after more than 24h\.|: this loop had no activity for over|: every task in the plan is checked off|: stopped because the review brief has a question)'
+# Follow the backslash continuation rather than a fixed line window. A +/-3 line
+# window leaked out of one `case` arm into the next one\'s soft_pause message and
+# reported it as a missing note — measured. A call site is the helper line plus
+# exactly the lines its continuations reach.
+MISSING=$(LC_ALL=C awk -v allow="$OQ_ALLOW_RE" '
+  {
+    if (pending && prev_cont && /"dual-review-loop/) {
+      if ($0 !~ /oq_suffix/ && $0 !~ allow) print NR
+      pending = 0
+    } else if (pending && !prev_cont) {
+      pending = 0
+    }
+    if ($0 ~ /(cleanup_and_approve|fail_open) /) pending = 1
+    prev_cont = ($0 ~ /\\$/)
   }' "$HOOK")
 if [ -z "$MISSING" ]; then
   ok "every loop-ending message either carries the open-question note or is explicitly exempt"
@@ -505,13 +522,43 @@ else
   fail "terminal message(s) at line(s) $(echo "$MISSING" | tr '\n' ' ')end the loop without saying an open question is outstanding — add \$(oq_suffix) or justify it in the allowlist above"
 fi
 
-# And the helper it depends on has to exist and be defined above its callers.
+# "Defined above first use" is NOT the invariant that matters, and asserting only
+# that certified a dead call for a whole release: Gate 3 interpolated the note 16
+# lines before oq_classify assigned the verdict it reads, so it could never emit
+# anything, and this file demanded the token be present on that very line. The
+# real invariant is that the CLASSIFIER runs above the first place its answer is
+# rendered. (Uses inside a function body are evaluated at call time, so only
+# top-level interpolations are ordered against it.)
 SUF_DEF=$(LC_ALL=C grep -n '^oq_suffix() {' "$HOOK" | head -1 | cut -d: -f1)
-SUF_USE=$(LC_ALL=C grep -n 'oq_suffix)' "$HOOK" | head -1 | cut -d: -f1)
-if [ -n "$SUF_DEF" ] && [ -n "$SUF_USE" ] && [ "$SUF_DEF" -lt "$SUF_USE" ]; then
-  ok "oq_suffix is defined above its first use (line $SUF_DEF < $SUF_USE)"
+CLASSIFY_AT=$(LC_ALL=C grep -n '^oq_classify$' "$HOOK" | head -1 | cut -d: -f1)
+FIRST_TOP_USE=$(LC_ALL=C awk '
+  /^[a-z_]+\(\) \{/ { fn = 1 }
+  /^\}$/              { fn = 0 }
+  !fn && /oq_suffix\)/ { print NR; exit }' "$HOOK")
+if [ -z "$SUF_DEF" ] || [ -z "$CLASSIFY_AT" ] || [ -z "$FIRST_TOP_USE" ]; then
+  fail "could not locate oq_suffix / oq_classify / a top-level note site — anchors changed, this assertion is not running"
 else
-  fail "oq_suffix is missing or defined below its first use — bash resolves functions at call time, so it would expand to nothing and every note would silently vanish"
+  [ "$SUF_DEF" -lt "$FIRST_TOP_USE" ] \
+    && ok "oq_suffix is defined above its first use (line $SUF_DEF < $FIRST_TOP_USE)" \
+    || fail "oq_suffix is defined at $SUF_DEF, below its first use at $FIRST_TOP_USE — bash resolves at call time, so every note would silently vanish"
+  if [ "$CLASSIFY_AT" -lt "$FIRST_TOP_USE" ]; then
+    ok "oq_classify runs above the first note site (line $CLASSIFY_AT < $FIRST_TOP_USE)"
+  else
+    fail "oq_classify runs at $CLASSIFY_AT, AFTER the note at $FIRST_TOP_USE — that note reads a verdict nobody has computed yet, so it is decoration: it can never render, and the presence check above will still pass"
+  fi
+fi
+
+# State deletion must stay confined to the two helpers the invariant scans. An
+# exit that inlines `rm -f "$STATE_FILE"` is invisible to it — measured as a way
+# past the check.
+INLINE_RM=$(LC_ALL=C awk '
+  /^(cleanup_and_approve|fail_open)\(\) \{/ { inhelper = 1 }
+  inhelper && /^\}$/ { inhelper = 0; next }
+  !inhelper && /rm -f "\$STATE_FILE"/ { print NR }' "$HOOK")
+if [ -z "$INLINE_RM" ]; then
+  ok "state deletion is confined to cleanup_and_approve and fail_open"
+else
+  fail "state is deleted outside the two helpers at line(s) $(echo "$INLINE_RM" | tr '\n' ' ')— such an exit bypasses the open-question note invariant entirely"
 fi
 
 echo ""

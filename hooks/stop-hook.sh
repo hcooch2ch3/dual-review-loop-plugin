@@ -198,9 +198,14 @@ oq_ambiguous() {
     /^###?[[:space:]]/ {
       head = $0
       sub(/[[:space:]]+$/, "", head)
-      # The exact bare heading is the terminal detector, not this one. Only the
-      # near misses are ours.
-      if (head ~ /^###?[[:space:]]+Open Questions$/) next
+      if (in_oq && length($1) <= level) { in_oq = 0; seen_item = 0 }
+      # The exact bare heading opens a section this function inspects the BODY
+      # of. Its heading is the terminal detector business; its unreadable body
+      # is ours.
+      if (head ~ /^###?[[:space:]]+Open Questions$/) {
+        level = length($1); in_oq = 1; seen_item = 0
+        next
+      }
       probe = tolower(head)
       sub(/^#+[[:space:]]*/, "", probe)   # the hashes are not part of the title
       gsub(/[*_`]/, "", probe)            # emphasis is decoration
@@ -208,14 +213,50 @@ oq_ambiguous() {
       # The phrase must START the title, not merely appear in it. An unanchored
       # substring test paused on real documents that NEGATE the phrase
       # ("## No Open Questions", "## Resolved Open Questions") and on documents
-      # merely ABOUT the feature ("### Task 3: Open Questions 판정을 …"). Those
-      # are headings whose own words say they are not a decision.
+      # merely ABOUT the feature ("### Task 3: Open Questions 판정을 …").
       if (probe ~ /^open[[:space:]]+questions/) {
         found = 1
         print head
         exit
       }
       next
+    }
+
+    # Body of an exact section. Reached only when the terminal detector already
+    # answered no, so anything it CAN read is not ours to judge.
+    in_oq {
+      line = $0
+      sub(/[[:space:]]+$/, "", line)
+      if (line ~ /^[[:space:]]*$/) next
+
+      # A top-level item is the terminal detector business.
+      if (line ~ /^([-*+]|[0-9]+[.)])[[:space:]]+/) { seen_item = 1; next }
+      # An INDENTED item under one is a note nested beneath it — the terminal
+      # detector documents ignoring those on purpose, and pausing on them
+      # re-creates the false positive that rule exists to remove. An indented
+      # item with nothing above it is orphaned content, and nothing else sees it.
+      if (line ~ /^[[:space:]]+([-*+]|[0-9]+[.)])[[:space:]]+/) {
+        if (seen_item) next
+        found = 1
+        print line
+        exit
+      }
+
+      probe = tolower(line)
+      gsub(/[*_`]/, "", probe)
+      sub(/^[[:space:]]+/, "", probe)
+      # PREFIX-anchored, not whole-line. This project writes the answer as
+      # "없다." followed by the reason on the same line, and a whole-line anchor
+      # missed every one of them — the single largest measured source of false
+      # pauses, and the reason the branch was briefly deleted outright.
+      if (probe ~ /^(없다|없음|해당[[:space:]]*없음|none|no[[:space:]]+open[[:space:]]+questions|n\/a)([[:space:]]|[.,;:。]|$)/) next
+      if (probe ~ /^\(none/) next
+      if (probe ~ /^\(없[음다]/) next
+      # A table separator carries no content of its own.
+      if (probe ~ /^\|?[[:space:]]*:?-+:?[[:space:]]*(\|[[:space:]]*:?-+:?[[:space:]]*)*\|?$/) next
+      found = 1
+      print line
+      exit
     }
     END { exit !found }
   '
@@ -235,6 +276,15 @@ oq_ambiguous() {
 oq_source_text() {
   if [ -n "$LAST_BRIEF_PATH" ] && [ -f "$LAST_BRIEF_PATH" ]; then
     cat "$LAST_BRIEF_PATH" 2>/dev/null || true
+    return 0
+  fi
+  # The transcript belongs to the session firing the hook, NOT necessarily to the
+  # loop in the state file. Classifying a foreign session let the idle GC quote
+  # unrelated work as "the decision in the review brief" while the same sentence
+  # admitted "Brief: <none>" — a specific, checkable-sounding, false claim on a
+  # path that deletes state. Only read it when the loop is this session.
+  if [ -n "$SESSION_ID_HOOK" ] && [ -n "$SESSION_ID_STATE" ] \
+     && [ "$SESSION_ID_HOOK" != "$SESSION_ID_STATE" ]; then
     return 0
   fi
   if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
@@ -412,7 +462,10 @@ fail_open() {
   # Only the reason string needs jq (it interpolates $1), so the two branches say
   # different amounts. That is the honest split: specific when we can be, generic
   # when we cannot, silent never.
-  jq -n --arg r "$1" '{"decision":"approve","systemMessage":("dual-review-loop stopped on an error it cannot recover from (" + $r + "). Its state file and marker were cleared; nothing you committed was touched. Fix the cause and start a new loop.")}' 2>/dev/null \
+  # fail_open deletes state too, so it owes the same note cleanup_and_approve
+  # owes. The invariant was written against one helper because that is the one
+  # the reported exits happened to use.
+  jq -n --arg r "$1" --arg oq "$(oq_suffix)" '{"decision":"approve","systemMessage":("dual-review-loop stopped on an error it cannot recover from (" + $r + "). Its state file and marker were cleared; nothing you committed was touched. Fix the cause and start a new loop." + $oq)}' 2>/dev/null \
     || printf '{"decision":"approve","systemMessage":"dual-review-loop stopped on an unrecoverable error and cleared its state file and marker. Nothing you committed was touched. Check .claude/dual-review-loop.log, then start a new loop."}\n'
   exit 0
 }
@@ -564,12 +617,10 @@ BAD_NUMERIC=$(jq -r '
   | join(", ")' "$STATE_FILE" 2>/dev/null || echo "")
 [ -z "$BAD_NUMERIC" ] || fail_open "non-numeric value in numeric state field(s): $BAD_NUMERIC"
 
-# Gate 3: active
-[ "$ACTIVE" = "true" ] || cleanup_and_approve "state.active != true" \
-  "dual-review-loop: the loop was already marked inactive, so its state was cleared. Nothing you committed was touched.$(oq_suffix)"
-
-# Read here rather than beside Gate 5 so the classification below can run before
-# the idle GC. It is a pure read of HOOK_INPUT and has no other ordering needs.
+# Read here rather than beside Gates 4/5 so the classification below can run
+# before the idle GC. Both are pure reads of HOOK_INPUT with no other ordering
+# needs, and the classifier needs the session id to refuse a foreign transcript.
+SESSION_ID_HOOK=$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
 TRANSCRIPT_PATH=$(printf '%s' "$HOOK_INPUT" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")
 
 # Classify the brief BEFORE the idle GC, not just before Gate 7.
@@ -583,6 +634,11 @@ TRANSCRIPT_PATH=$(printf '%s' "$HOOK_INPUT" | jq -r '.transcript_path // ""' 2>/
 # Paused state is not idle state either, and the GC can only know that if the
 # verdict exists before it runs.
 oq_classify
+
+# Gate 3: active
+[ "$ACTIVE" = "true" ] || cleanup_and_approve "state.active != true" \
+  "dual-review-loop: the loop was already marked inactive, so its state was cleared. Nothing you committed was touched.$(oq_suffix)"
+
 
 # Gate 6 (idle GC): runs HERE, ahead of the defensive gates, not after them.
 #
@@ -605,14 +661,21 @@ oq_classify
 LAST_ACT=$LAST_ITER_AT
 [ "$LAST_ACT" -eq 0 ] && LAST_ACT=$STARTED_AT
 if idle_dead "$NOW_EPOCH" "$LAST_ACT" "$INFLIGHT_FILE" "$LAST_INJECTED_AT"; then
-  if [ "$OQ_VERDICT" != "clear" ]; then
-    # Collected anyway — the lease is what bounds a hold, and an unbounded one is
-    # worse. But say what actually happened, because "no activity" sends the user
-    # looking for a crash instead of at the decision nobody told them was
-    # blocking the loop.
-    cleanup_and_approve "idle timeout (>${IDLE_TIMEOUT_SECONDS}s) while held on an open question" \
-      "dual-review-loop ended after more than 24h. It was NOT idle — it was holding for a decision in the review brief that was never answered: $(printf '%s' "$OQ_DETAIL" | head -c 160). Brief: ${LAST_BRIEF_PATH:-<none>}. Its state was cleared; answer the question and start a new loop."
-  fi
+  # Three arms, not two. Collapsing stop and pause here would repeat the exact
+  # conflation this file splits apart at Gate 7 and Gate 11 — telling a user whose
+  # brief heading says "→ 해소됨" that they never answered a question. Collected
+  # either way (the lease is what bounds a hold, and an unbounded one is worse),
+  # but the claim has to match what was actually seen.
+  case "$OQ_VERDICT" in
+    stop)
+      cleanup_and_approve "idle timeout (>${IDLE_TIMEOUT_SECONDS}s) while held on an open question" \
+        "dual-review-loop ended after more than 24h. It was NOT idle — it was holding for a decision in the review brief that was never answered: $(printf '%s' "$OQ_DETAIL" | head -c 160). Brief: ${LAST_BRIEF_PATH:-<none>}. Its state was cleared; answer the question and start a new loop."
+      ;;
+    pause)
+      cleanup_and_approve "idle timeout (>${IDLE_TIMEOUT_SECONDS}s) while held on an unreadable Open Questions section" \
+        "dual-review-loop ended after more than 24h. It was NOT idle — it was holding on a section shaped like an open question that it could not read as a decision, and nobody resolved it: $(printf '%s' "$OQ_DETAIL" | head -c 160). Brief: ${LAST_BRIEF_PATH:-<none>}. Check whether that section was a decision for you. Its state was cleared; start a new loop when you know."
+      ;;
+  esac
   cleanup_and_approve "idle timeout (>${IDLE_TIMEOUT_SECONDS}s)" \
     "dual-review-loop: this loop had no activity for over $((IDLE_TIMEOUT_SECONDS / 3600))h, so its state was collected and the loop has ended. Nothing you committed was touched — only the plugin's own state file and marker. To pick the work back up, start a new loop on the same plan."
 fi
@@ -622,7 +685,6 @@ fi
 # parse, and HOOK_INPUT is whatever the CLI handed us. Without the fallback a
 # malformed stdin trips the ERR trap instead of being treated as "no session id
 # supplied". The numeric-field read above already guards this way.
-SESSION_ID_HOOK=$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
 [ -n "$SESSION_ID_STATE" ] || fail_open "state.session_id empty"
 if [ -n "$SESSION_ID_HOOK" ] && [ "$SESSION_ID_HOOK" != "$SESSION_ID_STATE" ]; then
   soft_pause "different session ($SESSION_ID_HOOK != $SESSION_ID_STATE)" \
