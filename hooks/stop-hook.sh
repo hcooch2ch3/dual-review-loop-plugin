@@ -198,12 +198,12 @@ oq_ambiguous() {
     /^###?[[:space:]]/ {
       head = $0
       sub(/[[:space:]]+$/, "", head)
-      if (in_oq && length($1) <= level) { in_oq = 0; seen_item = 0 }
+      if (in_oq && length($1) <= level) { in_oq = 0; seen_content = 0 }
       # The exact bare heading opens a section this function inspects the BODY
       # of. Its heading is the terminal detector business; its unreadable body
       # is ours.
       if (head ~ /^###?[[:space:]]+Open Questions$/) {
-        level = length($1); in_oq = 1; seen_item = 0
+        level = length($1); in_oq = 1; seen_content = 0
         next
       }
       probe = tolower(head)
@@ -229,18 +229,23 @@ oq_ambiguous() {
       sub(/[[:space:]]+$/, "", line)
       if (line ~ /^[[:space:]]*$/) next
 
+      # A thematic break is punctuation, not content. The terminal detector skips
+      # these explicitly; this one did not, so *** and ___ paused while --- got
+      # away only because the table-separator rule happens to match it. Third
+      # time the two have diverged on a rule one of them documents.
+      if (line ~ /^([-*_][[:space:]]*){3,}$/) next
+
+      # ANY indented line continues whatever came before it in this section — a
+      # note nested under an item, or the wrapped remainder of the line above.
+      # The rule was first written for indented BULLETS, so a hard-wrapped
+      # continuation carried no marker, fell through to the content test, and
+      # paused on briefs whose first word is "(none". This project hard-wraps
+      # heavily. An indented line with NOTHING above it is still orphaned
+      # content and still pauses, which is the case the rule exists to keep.
+      if (seen_content && line ~ /^[[:space:]]+/) next
+
       # A top-level item is the terminal detector business.
-      if (line ~ /^([-*+]|[0-9]+[.)])[[:space:]]+/) { seen_item = 1; next }
-      # An INDENTED item under one is a note nested beneath it — the terminal
-      # detector documents ignoring those on purpose, and pausing on them
-      # re-creates the false positive that rule exists to remove. An indented
-      # item with nothing above it is orphaned content, and nothing else sees it.
-      if (line ~ /^[[:space:]]+([-*+]|[0-9]+[.)])[[:space:]]+/) {
-        if (seen_item) next
-        found = 1
-        print line
-        exit
-      }
+      if (line ~ /^([-*+]|[0-9]+[.)])[[:space:]]+/) { seen_content = 1; next }
 
       probe = tolower(line)
       gsub(/[*_`]/, "", probe)
@@ -249,9 +254,17 @@ oq_ambiguous() {
       # "없다." followed by the reason on the same line, and a whole-line anchor
       # missed every one of them — the single largest measured source of false
       # pauses, and the reason the branch was briefly deleted outright.
-      if (probe ~ /^(없다|없음|해당[[:space:]]*없음|none|no[[:space:]]+open[[:space:]]+questions|n\/a)([[:space:]]|[.,;:。]|$)/) next
-      if (probe ~ /^\(none/) next
-      if (probe ~ /^\(없[음다]/) next
+      #
+      # The space delimiter is load-bearing — real all-clears write "None at
+      # design time. …" and "없음 — 다만 …" — so it stays. Its one measured
+      # hazard is English "None of …", where the placeholder token opens a
+      # sentence that is itself the question. Korean is protected by
+      # agglutination ("없다고 볼 수 없다" pauses correctly); English is not.
+      # Excluded narrowly rather than by dropping the delimiter class.
+      if (probe ~ /^none[[:space:]]+of[[:space:]]/) { found = 1; print line; exit }
+      if (probe ~ /^(없다|없음|해당[[:space:]]*없음|none|no[[:space:]]+open[[:space:]]+questions|n\/a)([[:space:]]|[.,;:。]|$)/) { seen_content = 1; next }
+      if (probe ~ /^\(none/) { seen_content = 1; next }
+      if (probe ~ /^\(없[음다]/) { seen_content = 1; next }
       # A table separator carries no content of its own.
       if (probe ~ /^\|?[[:space:]]*:?-+:?[[:space:]]*(\|[[:space:]]*:?-+:?[[:space:]]*)*\|?$/) next
       found = 1
@@ -341,6 +354,10 @@ oq_classify() {
 # and the ordering stops being load-bearing.
 OQ_VERDICT=clear
 OQ_DETAIL=""
+# Same reason as the two above: oq_source_text reads this from inside a function
+# under `set -u`, so its safety depends on an assignment 300 lines away staying
+# above the call. That ordering held only by luck once already.
+SESSION_ID_HOOK=""
 
 oq_suffix() {
   case "$OQ_VERDICT" in

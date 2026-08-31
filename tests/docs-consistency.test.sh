@@ -497,9 +497,14 @@ fi
 # first version of this assertion scanned only cleanup_and_approve and was
 # therefore scoped to the instances, which is the very complaint it answers.
 #
-# The allowlist matches WHOLE LINES, not substrings. A substring alternation
-# exempted any future message that merely happened to contain an exempt phrase —
-# measured — so it could swallow an exit nobody ever reviewed.
+# The allowlist is anchored at the START of the message, not floating inside it.
+# A substring alternation exempted any future message that merely happened to
+# contain an exempt phrase — measured. Stated precisely because a start anchor is
+# NOT a whole-line match: a message that opens with an exempt phrase and then
+# says something entirely different is still exempt. That residue is accepted
+# (these four openings are distinctive enough to be deliberate), but claiming
+# "whole lines" here would be this file asserting more than its code does, which
+# is the exact defect it fails other files for.
 OQ_ALLOW_RE='^[[:space:]]*"dual-review-loop( ended after more than 24h\.|: this loop had no activity for over|: every task in the plan is checked off|: stopped because the review brief has a question)'
 # Follow the backslash continuation rather than a fixed line window. A +/-3 line
 # window leaked out of one `case` arm into the next one\'s soft_pause message and

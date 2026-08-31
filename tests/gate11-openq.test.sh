@@ -199,6 +199,28 @@ a real-plus-note  '## Open Questions\n- a real question\n  - side note\n'   CLEA
 # missed this and was the single largest measured source of false pauses.
 a prose-none-why  '## Open Questions\n없다. 두 리뷰어가 갈린 지점이 없고 …\n'  CLEAR
 a prose-none-paren '## Open Questions\n(없음 — 루프 계속)\n'                  CLEAR
+# I-6: a hard-wrapped item. The continuation carries no list marker, so it fell
+# past the item tests into the prose branch and paused on a brief whose first
+# word is "(none". The branch comment already says a line nested under a
+# top-level item is not a new question — that reasoning covers ANY indented line,
+# not only indented bullets. This project hard-wraps heavily.
+a wrapped-item    '## Open Questions\n- (none — verified by both reviewers;\n  all reservations deferred)\n' CLEAR
+a wrapped-prose   '## Open Questions\n없다. 갈린 지점이 없고\n  이어지는 줄\n'    CLEAR
+# ...but a wrapped line under NOTHING is still orphaned content.
+a wrapped-orphan  '## Open Questions\n  이어지는 줄만 있고 위에 항목이 없다\n'   AMBIGUOUS
+# M-3: the third instance of the sibling asymmetry. oq_first_item skips thematic
+# breaks explicitly; oq_ambiguous did not, so *** and ___ paused (--- escaped
+# only because the table-separator rule happens to match it).
+a break-star      '## Open Questions\n- 없음\n***\n'                          CLEAR
+a break-under     '## Open Questions\n- 없음\n___\n'                          CLEAR
+a break-dash      '## Open Questions\n- 없음\n---\n'                          CLEAR
+# M-8: two rules nobody exercised — deleting either left all nine files green.
+a paren-none-en   '## Open Questions\n(none)\n'                              CLEAR
+a table-sep-only  '## Open Questions\n|---|---|\n'                           CLEAR
+# I-4: the prefix anchor's known hazard, in English. Korean is protected by
+# agglutination ("없다고 볼 수 없다" pauses); English is not.
+a none-of-the     '## Open Questions\nNone of the reviewers agree on the index change.\n' AMBIGUOUS
+a none-at-design  '## Open Questions\nNone at design time. Surface during implementation.\n' CLEAR
 
 # And the cases that must stay CLEAR, or this becomes a loop that never runs.
 a exact-with-item '## Open Questions\n- a real question\n'                  CLEAR
