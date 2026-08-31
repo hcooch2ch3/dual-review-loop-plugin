@@ -633,6 +633,33 @@ else
   fail "state is deleted outside the two helpers at line(s) $(echo "$INLINE_RM" | tr '\n' ' ')— such an exit bypasses the open-question note invariant entirely"
 fi
 
+# ---------------------------------------------------------------------------
+# 12. The classifier's corpus claim must name its SELECTION RULE.
+#     Dual review could not reproduce an earlier version of this number and said
+#     so: "the corpus is undefined and therefore unverifiable... a number a
+#     reader must take on faith, in a file whose whole argument is that measured
+#     claims beat asserted ones." A count without a rule for what was counted is
+#     an assertion wearing a number.
+# ---------------------------------------------------------------------------
+if LC_ALL=C awk -v RS='' \
+     '/Measured on [0-9]+ real briefs/ && /reviews/ && (/selection rule/ || /which is the selection/) { found=1 }
+      END { exit !found }' "$README"; then
+  ok "README's corpus claim states how the corpus was selected"
+else
+  fail "README quotes a measured brief count without saying which files were counted — dual review could not reproduce the previous one for exactly that reason"
+fi
+
+# And the trade has three outcomes, not two. A false TERMINATE deletes state and
+# re-baselines the task-mode budgets; stating only "pause vs missed disagreement"
+# omits the one that was most frequent in this project's own corpus.
+if LC_ALL=C awk -v RS='' \
+     '/false pause/ && /false \*?terminate/ && /missed disagreement/ { found=1 }
+      END { exit !found }' "$README"; then
+  ok "README names all three outcomes of the gate, including a false terminate"
+else
+  fail "README states the gate's trade without the false-terminate outcome — that was the most frequent of the three when it was measured"
+fi
+
 echo ""
 echo "== docs consistency: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

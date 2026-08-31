@@ -242,6 +242,25 @@ oq_ambiguous() {
       # paused on briefs whose first word is "(none". This project hard-wraps
       # heavily. An indented line with NOTHING above it is still orphaned
       # content and still pauses, which is the case the rule exists to keep.
+      #
+      # THIS WIDENING IS FAIL-OPEN, AND IT WAS MEASURED BEFORE IT SHIPPED.
+      # Skipping every indented line rather than only indented bullets means a
+      # real disagreement written as an indented line under a placeholder now
+      # advances. That is the unsafe direction for this gate, so it does not get
+      # to rest on "it seemed fine". Both variants were run over 410 real briefs
+      # (~/.claude/projects/*/plans/*.md plus **/.claude/reviews/*.md under
+      # ~/Desktop):
+      #
+      #     indented BULLETS only : 65 pause
+      #     ANY indented line     : 62 pause
+      #     documents that differ : 3, all of them false pauses removed
+      #     true positives lost   : 0
+      #
+      # One of the three is the case dual review cited by name: a wrapped
+      # "- (none — verified by both reviewers; / all reservations deferred)".
+      # If you narrow this back, re-run that comparison rather than reasoning
+      # about it — every regression in this classifier so far came from changing
+      # it on an argument instead of a count.
       if (seen_content && line ~ /^[[:space:]]+/) next
 
       # A top-level item is the terminal detector business.

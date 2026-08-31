@@ -199,6 +199,12 @@ a real-plus-note  '## Open Questions\n- a real question\n  - side note\n'   CLEA
 # missed this and was the single largest measured source of false pauses.
 a prose-none-why  '## Open Questions\n없다. 두 리뷰어가 갈린 지점이 없고 …\n'  CLEAR
 a prose-none-paren '## Open Questions\n(없음 — 루프 계속)\n'                  CLEAR
+# The indented-line rule is the one deliberately FAIL-OPEN choice in this
+# classifier, so its cases are pinned here rather than left to the corpus.
+# Measured before shipping, 410 real briefs, indented-bullets-only vs
+# any-indented-line: 3 documents differ, all false pauses removed, 0 true
+# positives lost. Re-run that comparison if you narrow it; do not argue it.
+#
 # I-6: a hard-wrapped item. The continuation carries no list marker, so it fell
 # past the item tests into the prose branch and paused on a brief whose first
 # word is "(none". The branch comment already says a line nested under a
