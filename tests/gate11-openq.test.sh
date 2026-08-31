@@ -224,6 +224,42 @@ a task-title      '### Task 3: Open Questions 판정을 함수로 모은다\n- x
 # A brief that SHOWS an example inside a fence is quoting, not declaring.
 a fenced-example  '## Findings\n```\n## Open Questions (x)\n- y\n```\n'      CLEAR
 
+echo "-- the two detectors must agree on what a placeholder is --"
+# This file already records these two disagreeing once: "the same word, opposite
+# outcomes, in two functions twenty lines apart" (없다 was added to one and not
+# the other). That was fixed by syncing the token LISTS. The next commit changed
+# the ANCHOR in one of them — whole-line to prefix — and nothing here compared
+# them, so "- 없다. 두 리뷰어가 갈린 지점이 없고…" TERMINATED the loop and deleted
+# state while quoting the word for "none" back as the outstanding question.
+#
+# Comparing the two functions directly is the only assertion that closes the
+# class rather than the instance: a placeholder is a placeholder in both, or the
+# loop ends on a brief that says there is nothing to decide.
+agree() {  # $1=label  $2=placeholder text (no list marker)
+  local bullet prose t_stop a_pause
+  cases=$((cases+1))
+  bullet=$(printf '## Open Questions\n- %b\n' "$2")
+  prose=$(printf '## Open Questions\n%b\n' "$2")
+  if printf '%s\n' "$bullet" | oq_first_item >/dev/null 2>&1; then t_stop=yes; else t_stop=no; fi
+  if printf '%s\n' "$prose"  | oq_ambiguous  >/dev/null 2>&1; then a_pause=yes; else a_pause=no; fi
+  if [ "$t_stop" = no ] && [ "$a_pause" = no ]; then
+    printf '  ✓ %-20s both treat it as a placeholder\n' "$1"
+  else
+    printf '  ✗ %-20s terminal-stop=%s ambiguous-pause=%s — the two detectors disagree\n' "$1" "$t_stop" "$a_pause"
+    fail=1
+  fi
+}
+agree ph-bare-ko    '없음'
+agree ph-bare-ko2   '없다'
+agree ph-dot-ko     '없다.'
+agree ph-reason-ko  '없다. 두 리뷰어가 갈린 지점이 없고 표로 정했다'
+agree ph-reason-ko2 '없음. critic CRITICAL 전부 적용.'
+agree ph-bare-en    'None'
+agree ph-dot-en     'None.'
+agree ph-reason-en  'None. Both reviewers confirmed this is fine.'
+agree ph-na         'N/A'
+agree ph-haedang    '해당 없음'
+
 echo ""
 if [ "$fail" -eq 0 ]; then
   echo "== gate11 classifier: $cases cases passed =="

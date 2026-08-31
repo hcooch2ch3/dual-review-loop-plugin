@@ -283,10 +283,12 @@ oq_source_text() {
   # unrelated work as "the decision in the review brief" while the same sentence
   # admitted "Brief: <none>" — a specific, checkable-sounding, false claim on a
   # path that deletes state. Only read it when the loop is this session.
-  if [ -n "$SESSION_ID_HOOK" ] && [ -n "$SESSION_ID_STATE" ] \
-     && [ "$SESSION_ID_HOOK" != "$SESSION_ID_STATE" ]; then
-    return 0
-  fi
+  # Ownership must be PROVEN, not merely non-conflicting. The first version
+  # refused the transcript only when the two ids DIFFERED, so an empty id on
+  # either side — a hand-written state file, a hook input without the field —
+  # read as "no conflict" and the stranger transcript was used anyway. On a gate
+  # this file calls fail-closed, unknown has to resolve to "do not read".
+  [ -n "$SESSION_ID_HOOK" ] && [ "$SESSION_ID_HOOK" = "$SESSION_ID_STATE" ] || return 0
   if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     local last
     last=$(grep '"role":"assistant"' "$TRANSCRIPT_PATH" 2>/dev/null | tail -1) || last=""
@@ -396,10 +398,20 @@ oq_first_item() {
       probe = tolower(item)
       if (probe ~ /^[-*+[:space:]]*$/) next                    # a thematic break
       # Placeholders are not questions. These rules only ever REMOVE stops.
-      # 없다 belongs here too. It was added to the sibling classifier and not to
-      # this one, so "- 없다" TERMINATED a loop while "- 없음" advanced — the same
-      # word, opposite outcomes, in two functions twenty lines apart.
-      if (probe ~ /^(없음|없다|해당[[:space:]]*없음|none|no[[:space:]]+open[[:space:]]+questions|n\/a)[[:space:]]*[.]?$/) next
+      # Kept identical to the sibling classifier, ANCHOR included. These two have
+      # now diverged twice: first the token list (없다 in one and not the other),
+      # then the anchor (prefix in one, whole-line here). The second divergence
+      # was the worse one — it TERMINATED the loop and deleted state on a bullet
+      # reading "없다. 두 리뷰어가 갈린 지점이 없고…", quoting the word for "none"
+      # back to the user as the question needing their decision.
+      #
+      # A prefix anchor is what this project actually writes: the answer is the
+      # token, then the reason, on one line. Its risk is a real question that
+      # merely STARTS with a placeholder token ("None of the reviewers agree") —
+      # measured at 0 occurrences across 435 briefs, and stylistically opposed to
+      # the "token, then why" construction. If you change this anchor, change the
+      # other one in the same commit; the agreement test will tell you.
+      if (probe ~ /^(없음|없다|해당[[:space:]]*없음|none|no[[:space:]]+open[[:space:]]+questions|n\/a)([[:space:]]|[.,;:。]|$)/) next
       if (probe ~ /^\(none/) next
       found = 1
       print item
@@ -609,16 +621,16 @@ esac
 # differently, and fail_open deletes state. Running this first would delete every
 # future-schema state — the exact failure the schema gate exists to prevent, and
 # what midflight M4/M5 assert against.
-BAD_NUMERIC=$(jq -r '
-  [ to_entries[]
-    | select(.key | test("^(iteration|max_iterations|max_minutes|started_at_epoch|last_iter_at_epoch|last_injected_at_epoch|last_injected_iter|max_files|max_loc|max_reviews|reviews_baseline)$"))
-    | select(.value != null and (.value | type) != "number")
-    | .key ]
-  | join(", ")' "$STATE_FILE" 2>/dev/null || echo "")
-[ -z "$BAD_NUMERIC" ] || fail_open "non-numeric value in numeric state field(s): $BAD_NUMERIC"
-
-# Read here rather than beside Gates 4/5 so the classification below can run
-# before the idle GC. Both are pure reads of HOOK_INPUT with no other ordering
+# Classified HERE: after the state fields are read, before any gate that can end
+# the loop while a decision is outstanding.
+#
+# It sat below the numeric-field gate, so that gate deleted state and printed its
+# open-question note as an empty string — the note read a verdict nobody had
+# computed. That is the same "structurally dead note" defect fixed one commit ago
+# at Gate 3, at three more sites. The two gates still above this point (jq
+# missing, state not a JSON object) genuinely cannot classify — there is no jq,
+# or no usable state — and are exempted by name in the docs test rather than
+# left to look compliant. Both are pure reads of HOOK_INPUT with no other ordering
 # needs, and the classifier needs the session id to refuse a foreign transcript.
 SESSION_ID_HOOK=$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
 TRANSCRIPT_PATH=$(printf '%s' "$HOOK_INPUT" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")
@@ -634,6 +646,15 @@ TRANSCRIPT_PATH=$(printf '%s' "$HOOK_INPUT" | jq -r '.transcript_path // ""' 2>/
 # Paused state is not idle state either, and the GC can only know that if the
 # verdict exists before it runs.
 oq_classify
+
+BAD_NUMERIC=$(jq -r '
+  [ to_entries[]
+    | select(.key | test("^(iteration|max_iterations|max_minutes|started_at_epoch|last_iter_at_epoch|last_injected_at_epoch|last_injected_iter|max_files|max_loc|max_reviews|reviews_baseline)$"))
+    | select(.value != null and (.value | type) != "number")
+    | .key ]
+  | join(", ")' "$STATE_FILE" 2>/dev/null || echo "")
+[ -z "$BAD_NUMERIC" ] || fail_open "non-numeric value in numeric state field(s): $BAD_NUMERIC"
+
 
 # Gate 3: active
 [ "$ACTIVE" = "true" ] || cleanup_and_approve "state.active != true" \

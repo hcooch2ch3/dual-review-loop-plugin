@@ -505,17 +505,54 @@ OQ_ALLOW_RE='^[[:space:]]*"dual-review-loop( ended after more than 24h\.|: this 
 # window leaked out of one `case` arm into the next one\'s soft_pause message and
 # reported it as a missing note — measured. A call site is the helper line plus
 # exactly the lines its continuations reach.
+# Three escapes were demonstrated against the previous version and all three are
+# closed here. (1) A call whose MESSAGE is on the same line as the call was never
+# inspected, because the message check ran before `pending` was set — so the
+# same line is now checked too. (2) A message not beginning with the literal
+# "dual-review-loop was simply dropped; every terminal message must now begin
+# with it, so an unusual opening is a violation instead of an exit. (3) See the
+# state-deletion scan below for the third.
 MISSING=$(LC_ALL=C awk -v allow="$OQ_ALLOW_RE" '
+  function check(line, n) {
+    if (line !~ /oq_suffix/ && line !~ allow) print n
+  }
   {
-    if (pending && prev_cont && /"dual-review-loop/) {
-      if ($0 !~ /oq_suffix/ && $0 !~ allow) print NR
-      pending = 0
-    } else if (pending && !prev_cont) {
-      pending = 0
-    }
-    if ($0 ~ /(cleanup_and_approve|fail_open) /) pending = 1
+    is_call = ($0 ~ /(cleanup_and_approve|fail_open) /)
+    if (is_call && $0 ~ /"dual-review-loop/) { check($0, NR); pending = 0 }
+    else if (is_call) pending = 1
+    else if (pending && prev_cont && /"dual-review-loop/) { check($0, NR); pending = 0 }
+    else if (pending && !prev_cont) pending = 0
     prev_cont = ($0 ~ /\\$/)
   }' "$HOOK")
+
+# Every loop-ending message must be recognisable as one. The scan above can only
+# inspect messages it can find, and it finds them by that opening; without this,
+# writing a message that opens differently is a way past the check rather than a
+# style slip.
+# Only cleanup_and_approve takes a user message as its SECOND argument; fail_open
+# takes one argument and builds its own text, so a bare `fail_open "reason"` is
+# not a finding. Look at the arguments after the helper name, never at the rest
+# of the line — an unrelated `mv "$TEMP_FILE" "$STATE_FILE"` on a line that also
+# calls fail_open was flagged by a whole-line version.
+ODD_MSG=$(LC_ALL=C awk '
+  {
+    args = ""
+    if (match($0, /cleanup_and_approve /)) args = substr($0, RSTART + RLENGTH)
+    if (args != "") {
+      # second quoted argument present on this same line?
+      if (args ~ /"[^"]*"[[:space:]]+"/ && args !~ /"[^"]*"[[:space:]]+"dual-review-loop/) print NR
+      pending = (args ~ /\\$/)
+    } else if (pending && prev_cont) {
+      if (/^[[:space:]]*"/ && $0 !~ /"dual-review-loop/) print NR
+      pending = 0
+    } else pending = 0
+    prev_cont = ($0 ~ /\\$/)
+  }' "$HOOK")
+if [ -z "$ODD_MSG" ]; then
+  ok "every loop-ending message opens with the plugin name, so the scan above can find it"
+else
+  fail "loop-ending message(s) at line(s) $(echo "$ODD_MSG" | tr '\n' ' ')do not begin with \"dual-review-loop — the missing-note scan cannot see them"
+fi
 if [ -z "$MISSING" ]; then
   ok "every loop-ending message either carries the open-question note or is explicitly exempt"
 else
@@ -546,15 +583,45 @@ else
   else
     fail "oq_classify runs at $CLASSIFY_AT, AFTER the note at $FIRST_TOP_USE — that note reads a verdict nobody has computed yet, so it is decoration: it can never render, and the presence check above will still pass"
   fi
+
+  # The note inside fail_open renders at its CALL sites, which the check above
+  # cannot see: it deliberately looks only at top-level interpolations, so all
+  # twelve call sites were certified by a single line inside the helper while
+  # three of them sat above the classifier and could never print anything.
+  # Two gates legitimately cannot classify — no jq, or state that is not an
+  # object — and are named here so the exemption is a decision, not an oversight.
+  EARLY=$(LC_ALL=C awk -v c="$CLASSIFY_AT" '
+    NR < c && /(cleanup_and_approve|fail_open) "/ {
+      if ($0 !~ /jq not on PATH/ && $0 !~ /not a JSON object/) print NR
+    }' "$HOOK")
+  if [ -z "$EARLY" ]; then
+    ok "every loop-ending call site that could classify runs after oq_classify"
+  else
+    fail "loop-ending call site(s) at line(s) $(echo "$EARLY" | tr '\n' ' ')run BEFORE oq_classify — their open-question note expands to nothing, silently, exactly like the Gate 3 note did"
+  fi
 fi
 
 # State deletion must stay confined to the two helpers the invariant scans. An
 # exit that inlines `rm -f "$STATE_FILE"` is invisible to it — measured as a way
 # past the check.
+# Any way of destroying the state file, not one spelling of one command. The
+# literal `rm -f "$STATE_FILE"` match was bypassed by `rm -f "${STATE_FILE}"`,
+# and would equally have missed `rm --`, `mv`, `truncate` or a `>` redirect.
 INLINE_RM=$(LC_ALL=C awk '
   /^(cleanup_and_approve|fail_open)\(\) \{/ { inhelper = 1 }
   inhelper && /^\}$/ { inhelper = 0; next }
-  !inhelper && /rm -f "\$STATE_FILE"/ { print NR }' "$HOOK")
+  # A continued message string is prose, not code — the schema-mismatch message
+  # tells the user to rm the state file and is not itself doing so.
+  !inhelper && /^[[:space:]]*"/ { next }
+  # The atomic write is the ONE legitimate mv onto the state file: temp + mv is
+  # how every update lands. Named, so the exemption is a decision.
+  !inhelper && /mv "\$TEMP_FILE" "\$STATE_FILE"/ { next }
+  # No \< \> here: those are a GNU extension and this file must run under the awk
+  # that ships with macOS, where they silently never match — measured, with a
+  # bypass that stayed green.
+  !inhelper && /STATE_FILE/ && /(^|[^a-zA-Z_])(rm|truncate)[[:space:]]/ { print NR; next }
+  !inhelper && /STATE_FILE/ && /(^|[^a-zA-Z_])mv[[:space:]]/ { print NR; next }
+  !inhelper && />[[:space:]]*"?\$\{?STATE_FILE/ { print NR }' "$HOOK")
 if [ -z "$INLINE_RM" ]; then
   ok "state deletion is confined to cleanup_and_approve and fail_open"
 else

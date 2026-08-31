@@ -142,7 +142,7 @@ run_case "last-msg-wins-stop"    '## Open Questions
 # session guard the GC quoted that stranger's work as "the decision in the review
 # brief" — in the same sentence that said "Brief: <none>" — and then deleted the
 # state. A specific, checkable-sounding, false claim on the destructive path.
-foreign_session_case() {
+foreign_session_case() {  # $1=label $2=state session id $3=hook session id
   local t base now tr out msg
   t=$(mktemp -d "${TMPDIR:-/tmp}/drl-fs.XXXXXX") || return 1
   (
@@ -160,7 +160,7 @@ foreign_session_case() {
 - unrelated work happening in THIS session' \
     '{message:{role:"assistant",content:[{type:"text",text:$txt}]}}' > "$tr"
   # Owned by a session that is gone, and idle past the timeout so the GC fires.
-  jq -n --arg plan "$t/plan.md" --arg base "$base" \
+  jq -n --arg plan "$t/plan.md" --arg base "$base" --arg sid "$2" \
     '{schema:"v2",mode:"plan",active:true,plan_path:$plan,iteration:1,
       max_iterations:20,max_minutes:0,max_files:999999,max_loc:999999,
       max_reviews:999999,session_id:"OWNER-SESSION",
@@ -169,26 +169,32 @@ foreign_session_case() {
       started_at_sha:$base,inflight_base_sha:$base,
       last_brief_path:"",reviews_baseline:0}' \
     > "$t/.claude/dual-review-loop.state.json"
-  out=$(jq -cn --arg tr "$tr" \
-          '{session_id:"OTHER-SESSION",transcript_path:$tr,hook_event_name:"Stop"}' \
+  out=$(jq -cn --arg tr "$tr" --arg sid "$3" \
+          '{session_id:$sid,transcript_path:$tr,hook_event_name:"Stop"}' \
         | (cd "$t" && bash "$HOOK" 2>/dev/null))
   msg=$(printf '%s' "$out" | jq -r '.systemMessage // ""' 2>/dev/null)
   rm -rf "$t"
   case "$msg" in
     *"unrelated work happening in THIS session"*)
-      printf '  ✗ %-26s quoted another session transcript as this loop brief\n' "foreign-transcript"
+      printf '  ✗ %-26s quoted another session transcript as this loop brief\n' "foreign/$1"
       fail=1 ;;
     *"NOT idle"*)
-      printf '  ✗ %-26s claimed a held decision it read from another session\n' "foreign-transcript"
+      printf '  ✗ %-26s claimed a held decision it read from another session\n' "foreign/$1"
       fail=1 ;;
-    *) printf '  ✓ %-26s\n' "foreign-transcript" ;;
+    *) printf '  ✓ %-26s\n' "foreign/$1" ;;
   esac
 }
-foreign_session_case
+foreign_session_case "different" "OWNER-SESSION" "OTHER-SESSION"
+# Ownership UNKNOWN, not merely different. The first guard refused the transcript
+# only when the two ids conflicted, so an empty id on either side read as "no
+# conflict" and the stranger transcript was used anyway. Both shapes reproduce
+# the same false claim, and only the conflicting one was covered.
+foreign_session_case "empty-state-id" "" "OTHER-SESSION"
+foreign_session_case "empty-hook-id"  "OWNER-SESSION" ""
 
 echo ""
 if [ "$fail" -eq 0 ]; then
-  echo "== transcript arm: 9 passed, 0 failed =="
+  echo "== transcript arm: 11 passed, 0 failed =="
 else
   echo "== transcript arm: FAILED =="
 fi
