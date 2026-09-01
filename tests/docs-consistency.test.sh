@@ -685,6 +685,23 @@ else
   fail "the dirty-tree pause does not say WHAT is dirty — it names this plugin's own artifacts, which is wrong whenever the dirt came from another tool (measured: an untracked .omc/ stalled a real run)"
 fi
 
+# ---------------------------------------------------------------------------
+# 14. What the hook does NOT check, said out loud.
+#     The first real run produced briefs with two extra top-level sections and
+#     nothing noticed — correctly, since Gate 11 anchors on one heading and
+#     schema is the producer's business. But a reader who sees a green loop and
+#     infers well-formed briefs has been misled by silence. State the limit.
+# ---------------------------------------------------------------------------
+if LC_ALL=C awk '
+     /^[[:space:]]*[-*+] / || /^[[:space:]]*$/ { blk="" }
+     { blk = blk " " $0 }
+     blk ~ /does not validate/ && blk ~ /schema/ && blk ~ /Open Questions/ { found=1 }
+     END { exit !found }' "$README"; then
+  ok "README says the hook does not validate brief schema, only the one heading"
+else
+  fail "README does not state that brief schema is unchecked — a green loop then reads as evidence the briefs were well-formed, which it is not"
+fi
+
 echo ""
 echo "== docs consistency: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
