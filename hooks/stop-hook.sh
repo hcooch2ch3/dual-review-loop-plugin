@@ -280,6 +280,15 @@ oq_ambiguous() {
       # sentence that is itself the question. Korean is protected by
       # agglutination ("없다고 볼 수 없다" pauses correctly); English is not.
       # Excluded narrowly rather than by dropping the delimiter class.
+      #
+      # SCOPE, stated because it is easy to misread as general: this fires only
+      # for PROSE bodies. Written as a top-level bullet, the terminal detector
+      # sees the line first, reads "none" as its placeholder, and advances — that
+      # shape is a known limit, pinned in gate11-openq as ADVANCE. Closing it was
+      # measured twice and both trades lose: a question-mark rule adds two false
+      # TERMINATIONS on the real corpus (both lines quote an already-answered
+      # question), and excluding "none of" in the terminal detector would stop on
+      # "None of these are blocking". 0 occurrences across 144 English briefs.
       if (probe ~ /^none[[:space:]]+of[[:space:]]/) { found = 1; print line; exit }
       if (probe ~ /^(없다|없음|해당[[:space:]]*없음|none|no[[:space:]]+open[[:space:]]+questions|n\/a)([[:space:]]|[.,;:。]|$)/) { seen_content = 1; next }
       if (probe ~ /^\(none/) { seen_content = 1; next }

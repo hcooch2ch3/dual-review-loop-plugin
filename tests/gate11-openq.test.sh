@@ -226,6 +226,16 @@ a table-sep-only  '## Open Questions\n|---|---|\n'                           CLE
 # I-4: the prefix anchor's known hazard, in English. Korean is protected by
 # agglutination ("없다고 볼 수 없다" pauses); English is not.
 a none-of-the     '## Open Questions\nNone of the reviewers agree on the index change.\n' AMBIGUOUS
+# ...but only as PROSE. As a bullet the terminal detector sees it first and reads
+# "none" as the placeholder, so it advances. Pinned as a KNOWN LIMIT, not as
+# desired behaviour: closing it means either a question-mark rule (measured: adds
+# 2 false terminations on this corpus, both quoting an already-answered question)
+# or excluding "none of" in the terminal detector too (which would then stop on
+# "None of these are blocking", an equally plausible all-clear). Both trades were
+# measured and both lose. 0 occurrences across 144 English briefs.
+t none-of-bullet   '## Open Questions\n- None of the reviewers agree on X\n'  ADVANCE
+t none-so-far      '## Open Questions\n- None so far, but A and B split.\n'   ADVANCE
+t na-though        '## Open Questions\n- N/A, though B disputes the order\n'  ADVANCE
 a none-at-design  '## Open Questions\nNone at design time. Surface during implementation.\n' CLEAR
 
 # And the cases that must stay CLEAR, or this becomes a loop that never runs.
