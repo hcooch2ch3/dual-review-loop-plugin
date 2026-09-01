@@ -195,12 +195,30 @@ and if the field were dropped the messages would be inert.
 - `normalizeAttachmentForAPI` returns `[]` for it, so the text goes to the user
   and never back into the model's context. That is the right shape for this use.
 
-So in the interactive CLI the channel works, and it appears to be the one
-deliberately left visible for Stop hooks. **Not established:** headless
-`claude -p --output-format text`. The attachment is built for the UI layer, and
-whether the text printer emits it was not traced — so if you run loops headless
-and depend on seeing these messages, measure that first. `.claude/dual-review-loop.log`
-records every stop reason regardless of client.
+So in the interactive CLI the channel works, and it appears to be the one deliberately
+left visible for Stop hooks.
+
+**Headless is now measured too, and it splits by output format.** A throwaway Stop hook
+emitting `{"decision":"approve","systemMessage":"PROBE-…"}` was run under `claude -p`, with
+the hook writing a marker file so "the message is absent" could be told apart from "the hook
+never fired". It fired exactly once in each run.
+
+| mode | hook fired | message reaches the output |
+|---|---|---|
+| `claude -p --output-format text` | yes (1×) | **no — dropped entirely** |
+| `claude -p --output-format stream-json --verbose` | yes (1×) | **yes** |
+
+In `stream-json` it arrives as its own event, matching the interactive renderer's wording:
+
+```json
+{"type":"system","subtype":"informational","level":"notice",
+ "content":"Stop says: PROBE-…"}
+```
+
+**So a loop driven headless with `--output-format text` shows the user nothing** — every stop
+reason this plugin prints is invisible in that mode. That is the one configuration where
+`.claude/dual-review-loop.log` is not a convenience but the only channel, and it records every
+stop reason regardless of client.
 
 ## Architecture (quick reference)
 

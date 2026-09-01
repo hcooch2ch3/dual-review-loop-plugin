@@ -467,11 +467,18 @@ fi
 # paragraph and the assertion stayed green while the README now claimed the
 # OPPOSITE of the measurement. An honesty check that cannot tell a limit from a
 # denial of that limit is worse than none — it certifies the inversion.
+# The headless half is no longer "not established" — it was measured, and it
+# splits by output format. The claim to pin is now that BOTH modes are reported,
+# because the failing one (text) is the whole point: a loop run that way shows the
+# user nothing, and a README that mentions only the working mode would be worse
+# than the old honest gap.
 if LC_ALL=C grep -q 'hook_system_message' "$README" \
-   && LC_ALL=C grep -Eq '\*\*Not established:\*\*[[:space:]]*headless' "$README"; then
-  ok "README records how systemMessage delivery was measured AND what was not measured"
+   && LC_ALL=C grep -q 'output-format text' "$README" \
+   && LC_ALL=C grep -q 'output-format stream-json' "$README" \
+   && LC_ALL=C awk -v RS='' '/output-format text/ && /dropped/ { found=1 } END { exit !found }' "$README"; then
+  ok "README records the systemMessage measurement for interactive AND both headless modes"
 else
-  fail "README no longer carries both halves of the systemMessage measurement — do not reduce it to a bare claim, in either direction, without a new measurement"
+  fail "README no longer reports both headless modes — the text mode DROPS the message, and omitting the failing mode is worse than the honest gap this replaced"
 fi
 
 # ---------------------------------------------------------------------------
