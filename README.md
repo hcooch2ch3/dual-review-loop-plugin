@@ -176,6 +176,35 @@ If your loop stops without a `systemMessage` somewhere near 8 iterations, this i
 first thing to suspect, and `.claude/dual-review-loop.log` will show the last gate that
 ran.
 
+## What a real end-to-end run confirmed
+
+Everything else in this file is measured against fixtures or a corpus. This section is
+the one place where the loop was actually driven — three runs in a throwaway repo, a
+real plan, real reviewers, the real hook — because a suite that never runs the product
+cannot tell you the product runs.
+
+- **The loop completes.** Pick task → execute → dispatch two reviewers → write the
+  brief → flip the checkbox → atomic commit → clear the marker → hook advances →
+  terminate. Twice, unattended.
+- **Gate 7 holds the line while reviewers work.** The hook fired repeatedly during
+  each review and logged `no commit detected; not advancing` every time, then
+  `commit landed … clearing marker, advancing` once the commit was real. The
+  defence against advancing over uncommitted work is not theoretical.
+- **Gate 11 stops the loop on a disagreement, and says so on screen.** A brief
+  carrying a real open question terminated the run with
+  `Open Questions detected in last brief — user decision needed` in the log and the
+  full explanation in the user's terminal.
+- **The placeholder rule earns its keep on the first real brief.** A reviewer wrote
+  `- 없음 — 두 리뷰어의 판정이 … 갈린 지점이 없음` ("none — the two reviewers agreed").
+  Under the whole-line placeholder anchor this project shipped two days earlier, that
+  line **terminated the loop and deleted its state**, quoting the word for "none" back
+  as the question needing a decision. Under the prefix anchor it correctly advances.
+  The first real run would have died on its first brief.
+
+**Not exercised even so:** the auto-apply path for Accept findings, the Minor-deferral
+footer, and verify-failure retry — four reviewer runs returned zero findings on
+one-line appends, and the test repo had no verify command. Those remain fixture-only.
+
 ## Message delivery: is `systemMessage` seen on a non-blocking response?
 
 Every stop reason this plugin prints rides on `systemMessage` in a
@@ -196,8 +225,14 @@ and if the field were dropped the messages would be inert.
 - `normalizeAttachmentForAPI` returns `[]` for it, so the text goes to the user
   and never back into the model's context. That is the right shape for this use.
 
-So in the interactive CLI the channel works, and it appears to be the one deliberately
-left visible for Stop hooks.
+So in the interactive CLI the channel works — and that is no longer only a reading of
+the bundle. A live loop was driven end to end and the stop message appeared on screen,
+prefixed exactly as the renderer builds it:
+
+```
+⎿  Stop says: dual-review-loop: stopped because the review brief has a question
+   that needs your decision. Brief: …/iter-001.md. First item: …
+```
 
 **Headless is now measured too, and it splits by output format.** A throwaway Stop hook
 emitting `{"decision":"approve","systemMessage":"PROBE-…"}` was run under `claude -p`, with
