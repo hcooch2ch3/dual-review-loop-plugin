@@ -38,6 +38,22 @@ command -v jq >/dev/null 2>&1 || { echo "FATAL: jq required"; exit 2; }
 
 PASS=0; FAIL=0
 fail() { echo "  ✗ FAIL: $1"; FAIL=$((FAIL+1)); }
+# A typo'd helper name printed "command not found" to stderr and the run still
+# reported "0 failed" — measured, while adding the assertions below. An assertion
+# that cannot run is worse than one absent: the summary line vouches for it.
+#
+# Two guards were tried and REJECTED, both measured, not reasoned:
+#   * an ERR trap — also fires on the normal non-zero returns that `if` and
+#     `grep -c` produce, the same over-broad trap the hook itself documents;
+#   * command_not_found_handle — bash 4.0+, and macOS ships bash 3.2 (verified:
+#     `bash --version` -> 3.2.57), so it silently never fires. A guard that does
+#     nothing is precisely the defect this file exists to catch.
+#
+# So: count the assertions. A skipped one changes the total and nothing else
+# does. The number is hardcoded ON PURPOSE — unlike gate11-openq, where a
+# derived counter is right. Here the count IS the assertion, and having to bump
+# it is the mechanism rather than an inconvenience.
+EXPECTED_ASSERTIONS=19
 ok()   { echo "  ✓ $1"; PASS=$((PASS+1)); }
 
 # NOTE on the subshell: it must NOT be the left operand of `||`. Bash suppresses
@@ -259,6 +275,38 @@ if [ -n "$t" ]; then
   fi
 
   rm -rf "$t"
+fi
+
+# Waiting for the reviewers is where a real run broke, and the prompt never said
+# how to do it. The OUTPUT CONTRACT the skill injects literally contains the
+# marker string, so a model that waits by grepping its own transcript matches its
+# own dispatch prompt and "recovers" a review that was never written. The skill
+# documents the right way (wait for the completion notification); the prompt that
+# tells the model to call the skill has to say it too, in BOTH arms — a rule
+# applied to one of two arms is this project's most repeated defect.
+# No apostrophes inside the injected prompts. The whole prompt is built inside a
+# single-quoted shell string, so one apostrophe ends the string and breaks the
+# script — the same trap the awk classifier carries a warning about, walked into
+# again while adding the line below. `bash -n` does catch it, but as four
+# unrelated-looking failures; this says what actually happened.
+APOS=$(LC_ALL=C awk "/^\"\[dual-review-loop/,/^Do NOT manually edit/" "$HOOK" | LC_ALL=C grep -c "'" || true)
+if [ "${APOS:-0}" -eq 0 ]; then
+  ok "injected prompts contain no apostrophes (they live in a single-quoted string)"
+else
+  fail "injected prompts contain $APOS apostrophe(s) — one of them ends the single-quoted string and breaks the whole hook"
+fi
+
+WAITWARN=$(LC_ALL=C grep -c 'do NOT poll the transcript' "$HOOK" || true)
+if [ "${WAITWARN:-0}" -eq 2 ]; then
+  ok "both injected prompts warn against polling the transcript for the marker"
+else
+  fail "injected prompts carry the no-polling warning $WAITWARN time(s), want 2 (plan + task)"
+fi
+
+RAN=$((PASS + FAIL))
+if [ "$RAN" -ne "$EXPECTED_ASSERTIONS" ]; then
+  echo "  ✗ FAIL: $RAN assertions ran, expected $EXPECTED_ASSERTIONS — one did not run at all (a typo in a helper name does this silently). If you ADDED an assertion, bump EXPECTED_ASSERTIONS."
+  FAIL=$((FAIL+1))
 fi
 
 echo ""

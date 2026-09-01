@@ -667,6 +667,24 @@ else
   fail "README states the gate's trade without the false-terminate outcome — that was the most frequent of the three when it was measured"
 fi
 
+# ---------------------------------------------------------------------------
+# 13. The dirty-tree pause must name WHAT is dirty.
+#     Found in the first real end-to-end run, not by a reviewer: an untracked
+#     `.omc/` directory — another tool's output, nothing to do with this plugin —
+#     blocked Gate 9, and the message named only this plugin's own three ignore
+#     patterns. Those were already ignored, so the user had a stuck loop and a
+#     message pointing at the wrong thing. `git status --porcelain` is already
+#     captured in DIRTY and then only tested for emptiness; the answer was in
+#     scope and unspoken. Same class the last four review rounds kept finding.
+# ---------------------------------------------------------------------------
+if LC_ALL=C awk '
+     /every task in the plan is complete/ { if ($0 ~ /\$(\{)?DIRTY/) found=1 }
+     END { exit !found }' "$HOOK"; then
+  ok "the dirty-tree pause quotes the offending path instead of guessing at the cause"
+else
+  fail "the dirty-tree pause does not say WHAT is dirty — it names this plugin's own artifacts, which is wrong whenever the dirt came from another tool (measured: an untracked .omc/ stalled a real run)"
+fi
+
 echo ""
 echo "== docs consistency: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

@@ -906,14 +906,16 @@ case "$MODE" in
       # the user's uncommitted code. The rev-parse guard stays because
       # REPO_ROOT falls back to pwd when the hook runs outside a git repo.
       if git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
-        DIRTY=$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | head -1)
+        DIRTY_ALL=$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null || echo "")
+        DIRTY=$(printf '%s' "$DIRTY_ALL" | head -1)
+        DIRTY_N=$(printf '%s' "$DIRTY_ALL" | grep -c . || true)
         if [ -n "$DIRTY" ]; then
           log "no unfinished tasks but working tree dirty — soft-pause for manual commit"
           # This lands at the finish line: every task is done and the loop
           # stops one gate short of completing. Without a message the turn
           # just ends and the user cannot tell success from a hang.
           soft_pause "no unfinished tasks but uncommitted changes present" \
-            "dual-review-loop: every task in the plan is complete, but the working tree still has uncommitted changes, so the loop did not declare completion. Commit or stash them and the loop finishes on the next turn. If the changes are plugin artifacts, add .claude/dual-review-loop.*, .claude/dual-review-loop/ and .claude/reviews/ to .gitignore.$(oq_suffix)"
+            "dual-review-loop: every task in the plan is complete, but the working tree is not clean, so the loop did not declare completion. ${DIRTY_N:-?} path(s), starting with: $(printf '%s' "${DIRTY:-?}" | head -c 120). Commit or stash, or ignore it, and the loop finishes on the next turn. Note this counts UNTRACKED files too, including output from tools that have nothing to do with this loop — an untracked .omc/ has stalled a real run. If it is this plugin's own output, the patterns are .claude/dual-review-loop.*, .claude/dual-review-loop/ and .claude/reviews/.$(oq_suffix)"
         fi
       fi
       # Completion is a CLAIM, not just an exit: it tells the user the run
@@ -1172,7 +1174,7 @@ Process exactly ONE next unfinished task from the plan checkbox list:
 
 1. Pick the first \"- [ ]\" (or \"* [ ]\" / \"+ [ ]\" / \"N. [ ]\") item in \($plan)
 2. Execute it (make code changes, run tests, etc.)
-3. Invoke the dual-review skill programmatically. Include this block in your dispatch prompt:
+3. Invoke the dual-review skill programmatically. Wait for each completion notification — do NOT poll the transcript for the review markers. The output contract you send the reviewer CONTAINS those markers, so a grep matches your own dispatch prompt immediately and hands you a review nobody has written yet. Include this block in your dispatch prompt:
      dual-review-invocation:
        mode: programmatic
        execution_mode: wait
@@ -1215,7 +1217,7 @@ Process exactly ONE next concrete sub-step that advances this task:
 
 1. Decide one next sub-step — bias toward smaller, reviewable units (single file / single concept). If the task is now complete, do NOT invent more work; run /dual-review-loop:cancel-loop instead.
 2. Execute it (make code changes, run tests, etc.)
-3. Invoke the dual-review skill programmatically. Include this block in your dispatch prompt:
+3. Invoke the dual-review skill programmatically. Wait for each completion notification — do NOT poll the transcript for the review markers. The output contract you send the reviewer CONTAINS those markers, so a grep matches your own dispatch prompt immediately and hands you a review nobody has written yet. Include this block in your dispatch prompt:
      dual-review-invocation:
        mode: programmatic
        execution_mode: wait
