@@ -184,8 +184,8 @@ the one place where the loop was actually driven — three runs in a throwaway r
 real plan, real reviewers, the real hook — because a suite that never runs the product
 cannot tell you the product runs.
 
-- **The loop completes.** Pick task → execute → dispatch two reviewers → write the
-  brief → flip the checkbox → atomic commit → clear the marker → hook advances →
+- **The loop completes.** Pick task, execute, dispatch two reviewers, write the
+  brief, flip the checkbox, atomic commit, clear the marker, hook advances,
   terminate. Twice, unattended.
 - **Gate 7 holds the line while reviewers work.** The hook fired repeatedly during
   each review and logged `no commit detected; not advancing` every time, then
