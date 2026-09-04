@@ -1,16 +1,16 @@
 {
   "name": "dual-review-loop",
-  "version": "1.2.0",
+  "version": "2.0.0",
   "description": "Auto-iterate either a plan's checkbox tasks (plan mode) or a free-form inline task (task mode); each iteration runs dual-review as verifier, auto-applies Accept findings (≥ Important), atomic-commits. Stops on Open Questions / budget caps / cancel.",
   "author": {
     "name": "hcooch2ch3"
   },
   "license": "MIT",
   "repository": "https://github.com/hcooch2ch3/dual-review-loop-plugin",
-  "keywords": ["claude-code", "code-review", "automation", "dual-review"],
-  "commands": [
-    "./commands/dual-review-loop.md",
-    "./commands/dual-review-task.md",
-    "./commands/cancel-loop.md"
+  "keywords": [
+    "claude-code",
+    "code-review",
+    "automation",
+    "dual-review"
   ]
 }

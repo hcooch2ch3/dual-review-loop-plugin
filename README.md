@@ -2,8 +2,8 @@
 
 Claude Code plugin. Auto-iterate work under `dual-review` verification, auto-apply high-confidence findings, atomic-commit. Two modes:
 
-- **plan mode** (`/dual-review-loop:dual-review-loop`) — iterate a plan file's `- [ ]` checkbox tasks.
-- **task mode** (`/dual-review-loop:dual-review-task`) — iterate a free-form inline task; you decompose one sub-step per iteration.
+- **plan mode** (`/drl`) — iterate a plan file's `- [ ]` checkbox tasks.
+- **task mode** (`/drl-task`) — iterate a free-form inline task; you decompose one sub-step per iteration.
 
 Companion to [dual-review](https://github.com/hcooch2ch3/dual-review).
 
@@ -17,7 +17,7 @@ Companion to [dual-review](https://github.com/hcooch2ch3/dual-review).
 - At least one reviewer backend that `dual-review` can dispatch:
   - `superpowers:code-reviewer` + `codex:adversarial-review` (preferred), or
   - `oh-my-claudecode:critic` (fallback)
-- **Korean-language `dual-review` output.** The injected iteration prompt names Accept buckets by their Korean headings (`## ✅ Accept — 양쪽 독립 합치`, `## ✅ Accept — 단일 리뷰어, 기술적으로 타당`, `## Open Questions`). The hook itself only parses `## Open Questions` (English heading) for the early-stop gate; the rest live inside the prompt body. If you fork `dual-review` to emit English Accept headings, update the prompt strings in `commands/dual-review-loop.md` and `commands/dual-review-task.md` accordingly.
+- **Korean-language `dual-review` output.** The injected iteration prompt names Accept buckets by their Korean headings (`## ✅ Accept — 양쪽 독립 합치`, `## ✅ Accept — 단일 리뷰어, 기술적으로 타당`, `## Open Questions`). The hook itself only parses `## Open Questions` (English heading) for the early-stop gate; the rest live inside the prompt body. If you fork `dual-review` to emit English Accept headings, update the prompt strings in `skills/drl/SKILL.md` and `skills/drl-task/SKILL.md` accordingly.
 
 ## Install
 
@@ -47,18 +47,23 @@ See the [Claude Code plugin docs](https://docs.claude.com/en/docs/claude-code/pl
 
 Plan mode — iterate `- [ ]` checkboxes in a plan file:
 ```
-/dual-review-loop:dual-review-loop /abs/path/plan.md [--max-iters N] [--max-minutes M]
+/drl /abs/path/plan.md [--max-iters N] [--max-minutes M]
 ```
 
 Task mode — iterate a free-form task description (no plan file):
 ```
-/dual-review-loop:dual-review-task "<task description>" [--max-iters N] [--max-minutes M] [--max-files N] [--max-loc N] [--max-reviews N]
+/drl-task "<task description>" [--max-iters N] [--max-minutes M] [--max-files N] [--max-loc N] [--max-reviews N]
 ```
 
 Cancel either mode:
 ```
-/dual-review-loop:cancel-loop
+/drl-cancel
 ```
+
+> **Renamed in v2.0.0.** These shipped as plugin *commands* until v1.2.0, and Claude Code
+> resolves a plugin command only under its full prefix — `/dual-review-loop:dual-review-loop`,
+> `/dual-review-loop:dual-review-task`, `/dual-review-loop:cancel-loop`. They are plugin
+> *skills* now, so the short names above work as typed. The old names are gone.
 
 Defaults: `--max-iters 20`, `--max-minutes 0`. Both hook-enforced (Gates 10, 10b).
 
@@ -116,7 +121,7 @@ untracked plugin artifacts are enough to keep it dirty forever.
 - **English briefs: one narrow shape is missed** — the placeholder rule that lets a brief write `None. Both reviewers agreed.` on one line also swallows a real question that *opens* with a placeholder word: `- None of the reviewers agree on X`, `- None so far, but A and B split.`, `- N/A, though B disputes the order` all advance. Korean is protected by its grammar (`없다고 …` does not match); English is not. Two closures were measured and both lose — a question-mark rule adds two false *terminations* on the real corpus, and excluding `none of` outright would stop on `None of these are blocking`. Measured at **0 occurrences across 144 English briefs** (of 420 total), so it is documented rather than fixed. If it matters to you, put the disagreement in its own sentence: `- A says drop the index, B says keep it.` Everything else is language-neutral — placeholders (`None`, `N/A`, `No open questions`) and ordinary questions both classify correctly in English, and every message the hook prints is already English.
 - **Forward-fix only** — never `git revert` automatically. Wrong commit must be fixed forward.
 - **One concurrent loop per project** — state file existence gate. Mode-agnostic: a task-mode loop refuses plan-mode start and vice versa.
-- **Downgrading the plugin mid-loop** — schema v2 state (mode/cumulative fields, task mode) is rejected by pre-task-mode v1 hooks (older releases), which fail-open and delete the state file. Current v2 hook does the opposite on an unknown schema (e.g., a future v3 state seen by a v2 hook): `soft_pause` with a `systemMessage` telling you to upgrade the hook or run `/dual-review-loop:cancel-loop`. If you must downgrade to a pre-v2 hook while a loop is running: cancel first, or accept the loss. Forward upgrades (v1 state running, hook upgraded to v2) are safe — the new hook defaults `mode=plan` and treats absent cumulative fields as Infinity.
+- **Downgrading the plugin mid-loop** — schema v2 state (mode/cumulative fields, task mode) is rejected by pre-task-mode v1 hooks (older releases), which fail-open and delete the state file. Current v2 hook does the opposite on an unknown schema (e.g., a future v3 state seen by a v2 hook): `soft_pause` with a `systemMessage` telling you to upgrade the hook or run `/drl-cancel`. If you must downgrade to a pre-v2 hook while a loop is running: cancel first, or accept the loss. Forward upgrades (v1 state running, hook upgraded to v2) are safe — the new hook defaults `mode=plan` and treats absent cumulative fields as Infinity.
 - **The loop only watches the repo it started in** — the hook resolves one `REPO_ROOT` (`git rev-parse --show-toplevel`, from its own working directory) and pins every git call to it. Work that commits into a **different repo** — a sibling checkout, a nested repo, a submodule — is invisible: the in-flight backstop sees no forward `HEAD` motion, so the loop never auto-advances (it soft-pauses with "iter `<N>` has not committed yet"), and `git diff --shortstat` measures 0 changed files, so `max_files` and `max_loc` count nothing. Those caps then read as generous when they are simply blind. Run the loop in the repo whose commits it is supposed to see, one loop per repo.
 - **`## Open Questions` signals reviewer disagreement, and it has three outcomes** — Gate 11 ends the loop when a brief's `## Open Questions` section holds a real item, because a disagreement between the two reviewers is the one thing the loop must not resolve on its own. Items may be `-`/`*`/`+` bullets or numbered (`1.`, `1)`); placeholders (`none`, `n/a`, `없음`, `없다`, including `없다.` followed by a reason on the same line) do not count, and fenced blocks are skipped so a brief may quote an example safely. **This gate is deliberately fail-closed: anything Open-Questions-shaped that the loop cannot read as a decision pauses it, with state preserved, rather than advancing.** That covers a heading which *begins with* the phrase but is not exactly `## Open Questions` (`## Open Questions (unscored)`, `## Open Questions [DEGRADED]`, `## ❓ Open Questions`) and a body under an exact heading that is prose, a table, a blockquote, or an orphaned indented item — anything the item detector structurally cannot see. Suffixed headings do **not** terminate the loop (reviewers use them for their own notes, and terminating on them was measured as a regression); they hold it and name what they saw. Rename to anything not beginning with `Open Questions` and the loop resumes; rename to exactly `## Open Questions` with top-level bullets and the loop ends and hands you the decision. Until then the message repeats each turn and at 24h the loop is collected, with a message saying it was held rather than idle. Headings that merely mention the phrase (`## No Open Questions`, `### Task 3: Open Questions …`) are not matched, and a note indented under a top-level item is not treated as a new question. Measured on 410 real briefs — every `~/.claude/projects/*/plans/*.md` plus every `**/.claude/reviews/*.md` under `~/Desktop`, which is the selection rule so the number is checkable rather than asserted — **87 terminate, 62 pause**. There are three outcomes to weigh, not two: a false pause costs one rename, a false *terminate* deletes the state file and re-baselines the task-mode budgets, and a missed disagreement is a wrong commit. The pause rate is the deliberate cost of keeping the third one rare.
 
@@ -124,10 +129,10 @@ untracked plugin artifacts are enough to keep it dirty forever.
 
 The hook `soft_pause`s (state preserved, no inject) in several scenarios. The Claude Code UI shows a `systemMessage` for the recoverable ones. Common cases:
 
-- **"baseline commit `<sha>` was lost (rebase/squash/gc)"** — your `started_at_sha` was orphaned by a rebase or `git gc`. Cumulative caps (`max_files` / `max_loc`) can't be enforced. To resume: edit `.started_at_sha` in `.claude/dual-review-loop.state.json` to current `HEAD` (jq + temp+mv) and the next stop fire continues. Or run `/dual-review-loop:cancel-loop` to abandon the run. (The "do not edit state" rule applies to hook-owned counter fields, not this recovery edit; `started_at_sha` is command-owned.)
+- **"baseline commit `<sha>` was lost (rebase/squash/gc)"** — your `started_at_sha` was orphaned by a rebase or `git gc`. Cumulative caps (`max_files` / `max_loc`) can't be enforced. To resume: edit `.started_at_sha` in `.claude/dual-review-loop.state.json` to current `HEAD` (jq + temp+mv) and the next stop fire continues. Or run `/drl-cancel` to abandon the run. (The "do not edit state" rule applies to hook-owned counter fields, not this recovery edit; `started_at_sha` is command-owned.)
 - **"state schema `<x>` unknown"** — see the downgrade note above. Install a hook that supports the schema, or cancel.
 - **Manual deletion of `.claude/reviews/iter-*.md` mid-run** — the `max_reviews` gate uses a hook-tracked baseline. Deleting briefs causes a "reviews_baseline re-init" log entry on the next fire (baseline drops to the new count); the cap stays meaningful. No user action needed, just be aware that manually rm'd briefs reset the budget window.
-- **"iter `<N>` has not committed yet" / "completion can't be auto-detected"** — the previous iteration's in-flight marker is still present and no commit has landed since it was injected. If a commit *did* land but the loop didn't advance, the baseline SHA was probably missing (legacy/non-git state) — `rm .claude/dual-review-loop.inflight` to resume. Otherwise exit plan mode and let the iteration commit (it auto-resumes), or `/dual-review-loop:cancel-loop`.
+- **"iter `<N>` has not committed yet" / "completion can't be auto-detected"** — the previous iteration's in-flight marker is still present and no commit has landed since it was injected. If a commit *did* land but the loop didn't advance, the baseline SHA was probably missing (legacy/non-git state) — `rm .claude/dual-review-loop.inflight` to resume. Otherwise exit plan mode and let the iteration commit (it auto-resumes), or `/drl-cancel`.
 - **"another hook instance holds the lock"** — two hook fires overlapped and this one
   stood down. Normally self-correcting. If it repeats with no other loop running, the
   lock is stale (an instance was killed before it could release):
@@ -260,9 +265,11 @@ stop reason regardless of client.
 ## Architecture (quick reference)
 
 - `hooks/stop-hook.sh` — gates the loop on Claude Code stop event. Fail-open invariant. Schema v1 (plan-only legacy) and v2 (mode + cumulative gates) both accepted. Run `shellcheck hooks/stop-hook.sh` and `bash tests/run-all.sh` before changing it.
-- `commands/dual-review-loop.md` — `/dual-review-loop:dual-review-loop <plan>` (plan mode)
-- `commands/dual-review-task.md` — `/dual-review-loop:dual-review-task "<task>"` (task mode)
-- `commands/cancel-loop.md` — `/dual-review-loop:cancel-loop` (mode-agnostic)
+- `skills/drl/SKILL.md` — `/drl <plan>` (plan mode)
+- `skills/drl-task/SKILL.md` — `/drl-task "<task>"` (task mode)
+- `skills/drl-cancel/SKILL.md` — `/drl-cancel` (mode-agnostic)
+- All three skills set `disable-model-invocation: true` — only you start or cancel a loop. A skill is model-invocable by default, and this one commits code, so the guard is load-bearing.
+  The cost: a skill carrying that guard is also hidden from Claude's own skill listing, so Claude no longer knows these exist unless a hook message names one. That is why every stop-hook message that offers a way out spells out `/drl-cancel` literally. The old `commands/` layout was visible *and* user-only; the skills layout trades the visibility for the short name.
 - State: `.claude/dual-review-loop.state.json` (project-local JSON, atomic temp+mv). Single file across both modes; `mode` field discriminates.
 - Task log: `.claude/dual-review-loop/task-<session_id>.log.md` (task mode only; preserved across cancel for post-mortem)
 - In-flight marker: `.claude/dual-review-loop.inflight` (Claude deletes after commit; the hook also auto-clears it once it detects the iter's commit landed via git — see Known issues)

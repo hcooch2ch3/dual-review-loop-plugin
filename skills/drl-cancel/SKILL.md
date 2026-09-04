@@ -1,12 +1,14 @@
 ---
+name: drl-cancel
 description: Cancel the active dual-review-loop (plan or task mode) in the current project; immediate stop on next hook fire
+disable-model-invocation: true
 ---
 
-# /dual-review-loop:cancel-loop
+# /drl-cancel
 
 Stop the dual-review-loop running in the current project. Works for both
-plan mode (`/dual-review-loop:dual-review-loop`) and task mode
-(`/dual-review-loop:dual-review-task`).
+plan mode (`/drl`) and task mode
+(`/drl-task`).
 
 ## Implementation
 

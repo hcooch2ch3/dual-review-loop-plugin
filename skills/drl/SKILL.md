@@ -1,9 +1,11 @@
 ---
+name: drl
 description: Start an auto-iteration loop that processes a plan's checkbox tasks with dual-review as verifier
 argument-hint: "<plan-path> [--max-iters N] [--max-minutes M]"
+disable-model-invocation: true
 ---
 
-# /dual-review-loop
+# /drl
 
 Start the dual-review-loop. Each iteration:
 1. Pick next unfinished `- [ ]` task from the plan
@@ -36,7 +38,7 @@ If `<plan-path>` is relative or not provided: prompt user once via AskUserQuesti
 
 - File at `<plan-path>` exists.
 - Plan contains at least one `^([-*+]|[0-9]+\. ) \[ \]` line.
-- `<cwd>/.claude/dual-review-loop.state.json` does NOT already exist (refuse to start a second concurrent loop in the same project). This check is mode-agnostic: if a `task`-mode loop is in progress, this plan-mode invocation refuses (and vice versa via `/dual-review-loop:dual-review-task`).
+- `<cwd>/.claude/dual-review-loop.state.json` does NOT already exist (refuse to start a second concurrent loop in the same project). This check is mode-agnostic: if a `task`-mode loop is in progress, this plan-mode invocation refuses (and vice versa via `/drl-task`).
 - `dual-review` skill is installed at `~/.claude/skills/dual-review/SKILL.md` (warn if missing — caller should install first).
 - `jq` is on PATH (required by the stop hook).
 
@@ -69,7 +71,7 @@ them here. The one field that must be correct is `session_id`; the hook
 fail-opens on an empty one and soft-pauses the loop when it does not match the
 session the Stop hook fired in.
 
-Schema v2 (was v1) adds `mode` (`"plan"` here, `"task"` for `/dual-review-loop:dual-review-task`), cumulative gate fields (`max_*`), and `started_at_sha` (used by the hook as a git diff baseline to compute changed-files/LOC counters automatically — no LLM trust). Defaults above (999999) keep plan-mode behaviour identical to v1; the cumulative caps only fire if a caller explicitly lowers them.
+Schema v2 (was v1) adds `mode` (`"plan"` here, `"task"` for `/drl-task`), cumulative gate fields (`max_*`), and `started_at_sha` (used by the hook as a git diff baseline to compute changed-files/LOC counters automatically — no LLM trust). Defaults above (999999) keep plan-mode behaviour identical to v1; the cumulative caps only fire if a caller explicitly lowers them.
 
 `max_iterations` and `max_minutes` are enforced by the stop hook (Gates 10/10b).
 `max_iterations` is the binding cap; `max_minutes` defaults to 0 (disabled). Cumulative caps (Gates 10c–e) are enforced by the hook computing `git diff --shortstat <started_at_sha> HEAD` and counting `.claude/reviews/iter-*.md` files — these gates are hook-owned, not command-owned. The hook also enforces a hard 24h idle timeout — except that an in-flight marker
@@ -97,7 +99,7 @@ untracked keeps the working tree dirty, and Gate 9 refuses to declare
   session: <session_id>
   state file: .claude/dual-review-loop.state.json
 
-  Cancel anytime: /dual-review-loop:cancel-loop
+  Cancel anytime: /drl-cancel
   Or: rm .claude/dual-review-loop.state.json
 ```
 
@@ -132,5 +134,6 @@ Immediately proceed to execute the first unfinished task per the workflow:
 
 ## See also
 
-- `/dual-review-loop:cancel` — stop the loop
+- `/drl-task` — free-form inline task sibling (no plan file)
+- `/drl-cancel` — stop the loop
 - `~/.claude/skills/dual-review/SKILL.md` — the verifier

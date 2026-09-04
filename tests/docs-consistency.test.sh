@@ -5,7 +5,7 @@
 #
 # WHY THIS FILE EXISTS
 # Every other test in this suite drives the hook and observes its behaviour.
-# None of them read commands/*.md or README.md at all, so a constant could be
+# None of them read skills/*/SKILL.md or README.md at all, so a constant could be
 # changed in the hook and left stale in three documents — or a rule could be
 # stated in one command file and contradicted in the other — and the whole
 # suite would stay green. That gap was recorded as a known blind spot before
@@ -26,9 +26,9 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HOOK="$ROOT/hooks/stop-hook.sh"
 README="$ROOT/README.md"
-CMD_PLAN="$ROOT/commands/dual-review-loop.md"
-CMD_TASK="$ROOT/commands/dual-review-task.md"
-CMD_CANCEL="$ROOT/commands/cancel-loop.md"
+CMD_PLAN="$ROOT/skills/drl/SKILL.md"
+CMD_TASK="$ROOT/skills/drl-task/SKILL.md"
+CMD_CANCEL="$ROOT/skills/drl-cancel/SKILL.md"
 
 for f in "$HOOK" "$README" "$CMD_PLAN" "$CMD_TASK" "$CMD_CANCEL"; do
   [ -f "$f" ] || { echo "FATAL: missing $f"; exit 2; }
@@ -46,7 +46,7 @@ has() {  # has <label> <file> <ere>
 # assert that PATTERN occurs NOWHERE in the shipped docs + hook
 absent_everywhere() {  # absent_everywhere <label> <ere>
   local hits
-  hits=$(LC_ALL=C grep -rEln -e "$2" "$HOOK" "$README" "$ROOT/commands" 2>/dev/null || true)
+  hits=$(LC_ALL=C grep -rEln -e "$2" "$HOOK" "$README" "$ROOT/skills" 2>/dev/null || true)
   if [ -z "$hits" ]; then ok "$1"; else fail "$1 — still present in: $(echo "$hits" | sed "s|$ROOT/||" | tr '\n' ' ')"; fi
 }
 
@@ -239,7 +239,7 @@ has "plan command carries the STOP rule (differently worded on purpose)" "$CMD_P
 #    are the escape hatches; a typo here strands someone with a wedged loop.
 # ---------------------------------------------------------------------------
 for pathvar in 'dual-review-loop\.state\.json' 'dual-review-loop\.inflight' 'dual-review-loop\.lock'; do
-  if LC_ALL=C grep -Eq "$pathvar" "$HOOK" && LC_ALL=C grep -Eqr "$pathvar" "$README" "$ROOT/commands"; then
+  if LC_ALL=C grep -Eq "$pathvar" "$HOOK" && LC_ALL=C grep -Eqr "$pathvar" "$README" "$ROOT/skills"; then
     ok "recovery path $(echo "$pathvar" | tr -d '\\') is both implemented and documented"
   else
     fail "recovery path $(echo "$pathvar" | tr -d '\\') is not in both the hook and the docs"

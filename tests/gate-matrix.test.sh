@@ -742,7 +742,7 @@ if [ "$UPDATE" -eq 1 ] || [ "$MISSING_GOLDEN" -eq 1 ]; then
     echo "#                           it is no longer silent. Completion is still"
     echo "#                           unreachable while an untracked state file or"
     echo "#                           brief keeps the tree dirty: that is the correct"
-    echo "#                           refusal, and the guidance in commands/ + README"
+    echo "#                           refusal, and the guidance in skills/ + README"
     echo "#                           is what stops a compliant repo from hitting it."
     echo "#   gate09c-plan-outside-repo  FIXED (B-3) — no longer a frozen defect."
     echo "#                           It used to declare 'all tasks complete' and"

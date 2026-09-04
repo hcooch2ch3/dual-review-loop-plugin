@@ -154,7 +154,7 @@ soft_pause() {
   local msg="${2:-}"
   if [ -z "$msg" ]; then
     log "BUG: soft-pause with no user message — using a generic one: $1"
-    msg="dual-review-loop paused this turn without advancing ($1). Its state is preserved, so it can pick up again; run /dual-review-loop:cancel-loop to stop it for good."
+    msg="dual-review-loop paused this turn without advancing ($1). Its state is preserved, so it can pick up again; run /drl-cancel to stop it for good."
   fi
   jq -n --arg m "$msg" '{"decision":"approve","systemMessage":$m}' 2>/dev/null \
     || printf '{"decision":"approve","systemMessage":"dual-review-loop paused this turn without advancing; its state is preserved. See .claude/dual-review-loop.log."}\n'
@@ -651,7 +651,7 @@ case " $SCHEMA_VERSIONS_OK " in
   # older hook). fail_open here would nuke the user's loop; soft-pause lets
   # them downgrade/upgrade manually instead.
   *) soft_pause "schema mismatch (got=$SCHEMA expected one of: $SCHEMA_VERSIONS_OK) — state preserved; downgrade hook or cancel manually" \
-       "dual-review-loop paused: state schema '$SCHEMA' unknown. To resume: install a hook supporting this schema, OR run /dual-review-loop:cancel-loop (or rm $STATE_FILE) to start over." ;;
+       "dual-review-loop paused: state schema '$SCHEMA' unknown. To resume: install a hook supporting this schema, OR run /drl-cancel (or rm $STATE_FILE) to start over." ;;
 esac
 
 # Gate 2b: numeric fields must actually be numeric.
@@ -754,7 +754,7 @@ fi
 [ -n "$SESSION_ID_STATE" ] || fail_open "state.session_id empty"
 if [ -n "$SESSION_ID_HOOK" ] && [ "$SESSION_ID_HOOK" != "$SESSION_ID_STATE" ]; then
   soft_pause "different session ($SESSION_ID_HOOK != $SESSION_ID_STATE)" \
-    "dual-review-loop: this loop belongs to a different Claude Code session, so this turn did not advance it. Its state is untouched. Resume it from the session that started it, or run /dual-review-loop:cancel-loop to clear it."
+    "dual-review-loop: this loop belongs to a different Claude Code session, so this turn did not advance it. Its state is untouched. Resume it from the session that started it, or run /drl-cancel to clear it."
 fi
 
 # Gate 5: same-session phantom defense
@@ -792,7 +792,7 @@ if [ "$LAST_INJECTED_ITER" -gt 0 ]; then
   fi
   if [ "$CONTINUATION" -eq 0 ]; then
     soft_pause "no continuation signal (last_injected_iter=$LAST_INJECTED_ITER, gap=${GAP:-?}s) — user likely took control" \
-      "dual-review-loop: the loop did not advance because this turn does not look like a continuation of iteration $LAST_INJECTED_ITER — you likely took over manually. The state is preserved; it picks up again on a turn that follows its instructions, or run /dual-review-loop:cancel-loop to stop it."
+      "dual-review-loop: the loop did not advance because this turn does not look like a continuation of iteration $LAST_INJECTED_ITER — you likely took over manually. The state is preserved; it picks up again on a turn that follows its instructions, or run /drl-cancel to stop it."
   fi
 fi
 
@@ -866,13 +866,13 @@ if [ -f "$INFLIGHT_FILE" ]; then
     OQ_CAVEAT=""
     [ -n "$INFLIGHT_BASE_SHA" ] || OQ_CAVEAT=" (Note: this loop has no baseline SHA — legacy or non-git state — so a landed commit cannot be auto-detected here.)"
     if [ "$OQ_VERDICT" = "stop" ]; then
-      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} stopped on a reviewer disagreement, not on a commit problem. The brief has an open question and the loop must not decide it for you — $(printf '%s' "$OQ_DETAIL" | head -c 160). Brief: ${LAST_BRIEF_PATH:-<none>}. Answer it, then run /dual-review-loop:cancel-loop and start a new loop. Do NOT just clear the marker to make this go away: that lets the loop continue past a disagreement nobody settled.${OQ_CAVEAT}"
+      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} stopped on a reviewer disagreement, not on a commit problem. The brief has an open question and the loop must not decide it for you — $(printf '%s' "$OQ_DETAIL" | head -c 160). Brief: ${LAST_BRIEF_PATH:-<none>}. Answer it, then run /drl-cancel and start a new loop. Do NOT just clear the marker to make this go away: that lets the loop continue past a disagreement nobody settled.${OQ_CAVEAT}"
     elif [ "$OQ_VERDICT" = "pause" ]; then
-      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} did not commit, and its brief has a heading shaped like an open question that the loop cannot read as a decision — $(printf '%s' "$OQ_DETAIL" | head -c 160). Brief: ${LAST_BRIEF_PATH:-<none>}. Check whether that section is a decision for you. If it is not, rename the heading to anything that does not begin with 'Open Questions' and the loop continues; /dual-review-loop:cancel-loop stops it instead.${OQ_CAVEAT}"
+      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} did not commit, and its brief has a heading shaped like an open question that the loop cannot read as a decision — $(printf '%s' "$OQ_DETAIL" | head -c 160). Brief: ${LAST_BRIEF_PATH:-<none>}. Check whether that section is a decision for you. If it is not, rename the heading to anything that does not begin with 'Open Questions' and the loop continues; /drl-cancel stops it instead.${OQ_CAVEAT}"
     elif [ -n "$INFLIGHT_BASE_SHA" ]; then
-      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} has not committed yet (plan mode can block commits, or it stopped early) and its brief shows no open question. It auto-resumes the moment a commit lands — exit plan mode and let it finish. If this iteration legitimately produced no commit, run /dual-review-loop:cancel-loop (or rm .claude/dual-review-loop.inflight)."
+      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} has not committed yet (plan mode can block commits, or it stopped early) and its brief shows no open question. It auto-resumes the moment a commit lands — exit plan mode and let it finish. If this iteration legitimately produced no commit, run /drl-cancel (or rm .claude/dual-review-loop.inflight)."
     else
-      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} is in-flight but completion can't be auto-detected (no baseline SHA — legacy state or non-git repo). Its brief shows no open question. If the work already committed, rm .claude/dual-review-loop.inflight to resume; otherwise run /dual-review-loop:cancel-loop."
+      PAUSE_MSG="dual-review-loop: iter ${INFLIGHT_ITER} is in-flight but completion can't be auto-detected (no baseline SHA — legacy state or non-git repo). Its brief shows no open question. If the work already committed, rm .claude/dual-review-loop.inflight to resume; otherwise run /drl-cancel."
     fi
     log "in-flight marker present (iter=$INFLIGHT_ITER) — no commit detected; not advancing (base_sha=${INFLIGHT_BASE_SHA:-<none>})"
     # Keep state + marker so the next fire / a debugger can still see it.
@@ -1000,7 +1000,7 @@ elif [ -n "$STARTED_AT_SHA" ]; then
   # Silently leaving CUM_*=0 would disable budget caps; soft-pause for the
   # user to decide (re-baseline by editing state, or cancel cleanly).
   soft_pause "started_at_sha=$STARTED_AT_SHA no longer resolvable (rebase?) — cumulative caps cannot be enforced; resolve manually or cancel" \
-    "dual-review-loop paused: baseline commit $STARTED_AT_SHA was lost (rebase/squash/gc). To resume: edit '.started_at_sha' in $STATE_FILE to current HEAD (jq + temp+mv), OR run /dual-review-loop:cancel-loop. (The 'do not edit state' rule applies to hook-owned counter fields, not this recovery edit.)"
+    "dual-review-loop paused: baseline commit $STARTED_AT_SHA was lost (rebase/squash/gc). To resume: edit '.started_at_sha' in $STATE_FILE to current HEAD (jq + temp+mv), OR run /drl-cancel. (The 'do not edit state' rule applies to hook-owned counter fields, not this recovery edit.)"
 fi
 # Review-count gate: count files written **after** loop start so prior runs'
 # briefs don't pre-exhaust max_reviews. Hook records reviews_baseline on its
@@ -1078,7 +1078,7 @@ esac
 # questions. Latent only because the classifier never prints an empty detail.
 if [ "$OQ_VERDICT" = "pause" ]; then
   soft_pause "ambiguous Open Questions in brief ($OQ_AMBIG)" \
-    "dual-review-loop paused: the brief has a heading shaped like an Open Questions section that the loop cannot read as a decision — $(printf '%s' "$OQ_DETAIL" | head -c 160). The loop holds rather than guess, because this section is how a reviewer disagreement reaches you. Two ways out, and they do NOT do the same thing. (1) It is only a reviewer's note: rename the heading to anything not beginning with 'Open Questions' and the loop RESUMES where it left off. (2) It is a real decision: rename it to exactly '## Open Questions' with each item on its own top-level bullet — the loop then ENDS and hands it to you, clearing its state (in task mode that also re-baselines the file/LOC/review budgets). Until you do one of those this message repeats every turn, and after 24h the loop is collected. Brief: ${LAST_BRIEF_PATH:-<none>}. /dual-review-loop:cancel-loop stops it now."
+    "dual-review-loop paused: the brief has a heading shaped like an Open Questions section that the loop cannot read as a decision — $(printf '%s' "$OQ_DETAIL" | head -c 160). The loop holds rather than guess, because this section is how a reviewer disagreement reaches you. Two ways out, and they do NOT do the same thing. (1) It is only a reviewer's note: rename the heading to anything not beginning with 'Open Questions' and the loop RESUMES where it left off. (2) It is a real decision: rename it to exactly '## Open Questions' with each item on its own top-level bullet — the loop then ENDS and hands it to you, clearing its state (in task mode that also re-baselines the file/LOC/review budgets). Until you do one of those this message repeats every turn, and after 24h the loop is collected. Brief: ${LAST_BRIEF_PATH:-<none>}. /drl-cancel stops it now."
 fi
 
 if [ "$OPEN_Q_FOUND" -eq 1 ]; then
@@ -1100,7 +1100,7 @@ NEXT_BRIEF_PATH="${REVIEWS_DIR}/iter-${ITER_PADDED}.md"
 mkdir -p "$REVIEWS_DIR" 2>/dev/null \
   || fail_open "cannot create the reviews directory: $REVIEWS_DIR (is .claude writable?)"
 
-# `iteration` is hand-seeded (see the state template in commands/), so it can be
+# `iteration` is hand-seeded (see the state template in skills/), so it can be
 # rewound — re-seeding after a terminal gate sets it back to 0 and this path is
 # computed a second time. The injected prompt tells the model to save the brief
 # there verbatim, so a collision is silent data loss: the previous iteration's
@@ -1204,7 +1204,7 @@ Process exactly ONE next unfinished task from the plan checkbox list:
 10. Stop. The hook will re-fire for the next iter or terminate naturally.
 
 Do NOT manually edit .claude/dual-review-loop.state.json — the hook owns it.
-To cancel: rm .claude/dual-review-loop.state.json (or run /dual-review-loop:cancel-loop)."')
+To cancel: rm .claude/dual-review-loop.state.json (or run /drl-cancel)."')
     SYSTEM_MSG="dual-review-loop plan iter ${NEXT_ITER}/${MAX_ITERATIONS}"
     ;;
   task)
@@ -1224,7 +1224,7 @@ Task: \($task)
 
 Process exactly ONE next concrete sub-step that advances this task:
 
-1. Decide one next sub-step — bias toward smaller, reviewable units (single file / single concept). If the task is now complete, do NOT invent more work; run /dual-review-loop:cancel-loop instead.
+1. Decide one next sub-step — bias toward smaller, reviewable units (single file / single concept). If the task is now complete, do NOT invent more work; run /drl-cancel instead.
 2. Execute it (make code changes, run tests, etc.)
 3. Invoke the dual-review skill programmatically. Wait for each completion notification — do NOT poll the transcript for the review markers. The output contract you send the reviewer CONTAINS those markers, so a grep matches your own dispatch prompt immediately and hands you a review nobody has written yet. Include this block in your dispatch prompt:
      dual-review-invocation:
@@ -1249,7 +1249,7 @@ Process exactly ONE next concrete sub-step that advances this task:
 Budget caps (hook gates): max_files=\($max_files), max_loc=\($max_loc), max_reviews=\($max_reviews). Going over any → loop ends.
 
 Do NOT manually edit .claude/dual-review-loop.state.json — the hook owns iteration/timestamp fields.
-To cancel: rm .claude/dual-review-loop.state.json (or run /dual-review-loop:cancel-loop)."')
+To cancel: rm .claude/dual-review-loop.state.json (or run /drl-cancel)."')
     SYSTEM_MSG="dual-review-loop task iter ${NEXT_ITER}/${MAX_ITERATIONS}"
     ;;
   # Without this arm REASON and SYSTEM_MSG stay unset, and the jq below expands

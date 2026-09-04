@@ -1,12 +1,14 @@
 ---
+name: drl-task
 description: Start an auto-iteration loop that processes a free-form task with dual-review as verifier (no plan file needed)
 argument-hint: "\"<task description>\" [--max-iters N] [--max-minutes M] [--max-files N] [--max-loc N] [--max-reviews N]"
+disable-model-invocation: true
 ---
 
-# /dual-review-loop:dual-review-task
+# /drl-task
 
 Start the dual-review-loop in **task mode**. Same iteration shape as
-`/dual-review-loop:dual-review-loop`, but the unit of work is a free-form
+`/drl`, but the unit of work is a free-form
 inline task description instead of a plan file's checkboxes. Each iteration:
 
 1. Decompose the task into one next concrete sub-step (you decide)
@@ -125,7 +127,7 @@ dirty, and Gate 9 will not declare completion over a dirty tree.
   state file: .claude/dual-review-loop.state.json
   log: .claude/dual-review-loop/task-<session_id>.log.md
 
-  Cancel anytime: /dual-review-loop:cancel-loop
+  Cancel anytime: /drl-cancel
   Or: rm .claude/dual-review-loop.state.json
 ```
 
@@ -214,7 +216,7 @@ The stop hook (`hooks/stop-hook.sh`) gates:
   marker defers collection by a bounded lease, it does not cancel it). Despite the
   number, this gate runs early — right after Gate 3, ahead of the session and
   continuation checks — so a dead loop is collected rather than pausing forever.
-- User runs `/dual-review-loop:cancel-loop` or removes state file.
+- User runs `/drl-cancel` or removes state file.
 
 There is no `consecutive_same_failure` gate — the verify-fingerprint
 definition was non-deterministic across iters. Hard stop on repeated
@@ -231,6 +233,6 @@ failure is your `max_iterations` budget instead.
 
 ## See also
 
-- `/dual-review-loop:dual-review-loop` — plan-checkbox driven sibling
-- `/dual-review-loop:cancel-loop` — stop either mode
+- `/drl` — plan-checkbox driven sibling
+- `/drl-cancel` — stop either mode
 - `~/.claude/skills/dual-review/SKILL.md` — the verifier
