@@ -48,20 +48,21 @@ setup() {  # setup <state-json-literal> -> prints repo path
   printf '%s' "$t"
 }
 
-# Run the hook once. Sets OUT / MSG / MARKER / LOGTAIL in the caller's scope.
+# Run the hook once. Sets OUT / ERRTXT / MSG / MARKER in the caller's scope.
 fire() {  # fire <repo> [stdin-json]
   local t="$1" stdin="${2:-{\"session_id\":\"s\",\"transcript_path\":\"\",\"hook_event_name\":\"Stop\"}}"
   OUT=$(printf '%s' "$stdin" | (cd "$t" && bash "$HOOK" 2>"$t/stderr.txt"))
   ERRTXT=$(cat "$t/stderr.txt" 2>/dev/null || echo "")
   MSG=$(printf '%s' "$OUT" | jq -r '.systemMessage // ""' 2>/dev/null || echo "")
   if [ -f "$t/.claude/dual-review-loop.inflight" ]; then MARKER=present; else MARKER=DELETED; fi
-  LOGTAIL=$(tail -3 "$t/.claude/dual-review-loop.log" 2>/dev/null || echo "")
 }
 
-# A case is only meaningful if it actually reached the path we think it did.
-# Without this guard a hook that fail-opens at Gate 0 passes every assertion
-# below while proving nothing — the exact failure jq-missing.test.sh documents.
-reached_trap() { case "$LOGTAIL" in *"ERR trap fired"*) return 0 ;; *) return 1 ;; esac; }
+# There is deliberately no shared "did this case reach the path we think it did?"
+# helper here. Each case proves it its own way, which is stronger than a common
+# log-tail grep: 1 and 2 assert the message names the gate that produced it, 3
+# and 3b drive soft_pause and the ERR trap directly, 3c asserts on stderr. A
+# shared helper keyed on "ERR trap fired" could not serve 1 and 2 at all — both
+# assert the trap did NOT fire.
 
 echo "== silent exit paths =="
 
